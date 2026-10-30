@@ -105,7 +105,12 @@ class Plane:
                 resp = await self._req(
                     "POST",
                     "/projects/",
-                    json={"name": project_name_for(repo), "identifier": ident, "description": f"kiukairor-org/{repo} (homie-catcher)", "network": 2},
+                    json={
+                        "name": project_name_for(repo),
+                        "identifier": ident,
+                        "description": f"kiukairor-org/{repo} (homie-catcher)",
+                        "network": 2,
+                    },
                 )
                 return resp.body
             except HttpError as exc:
