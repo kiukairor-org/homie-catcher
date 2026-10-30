@@ -521,8 +521,19 @@ class Catcher:
                 self.db.release_nr_issue(alert["issue_id"])
         return {"created": created, "duplicates": duplicates, "invalid": invalid}
 
+    async def _alert_repo(self, alert: dict) -> str:
+        """The org repo the alert's entity names (untrusted) point at, if exactly one existing, allowed
+        repo matches (resolve_repo never returns an excluded repo); otherwise NR_TARGET_REPO."""
+        try:
+            available = selectable_repos(await self.org_repos())
+        except Exception:  # noqa: BLE001 - routing falls back, the alert must not be lost
+            log.exception("could not list repos for alert routing")
+            available = []
+        hits = {r for n in alert["entity_names"] if (r := resolve_repo(n, available))}
+        return hits.pop() if len(hits) == 1 else self.cfg.nr_target_repo
+
     async def _triage_alert(self, alert: dict) -> None:
-        repo = self.cfg.nr_target_repo
+        repo = await self._alert_repo(alert)
         names = ", ".join(alert["entity_names"]) or "n/a"
         summary_plain = (
             f"New Relic issue {alert['issue_id']} ({alert['priority']}): {alert['title']}. "

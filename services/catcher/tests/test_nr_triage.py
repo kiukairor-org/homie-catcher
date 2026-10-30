@@ -173,7 +173,9 @@ def test_untrusted_alert_text_is_escaped_and_only_triages():
         assert (await bot.ingest_alerts({"issues": [evil, {"issue_id": "bad id with spaces"}, "junk"]}))["created"] == 1
         assert claude.prompts == []
         writes = [(c.service, c.method, c.path) for c in svc.calls if c.is_write and c.service in ("github", "plane")]
-        assert not [w for w in writes if w[0] == "github"]
+        # minting an installation token (to list repos for routing) is the only GitHub POST allowed
+        assert not [w for w in writes if w[0] == "github" and not w[2].endswith("/access_tokens")]
+        writes = [w for w in writes if w[0] != "github"]
         assert all(m == "POST" and p.endswith(("/projects/", "/states/", "/labels/", "/issues/")) for _, m, p in writes)
         (wi,) = svc.plane_items.values()
         assert svc.plane_state_name(wi["id"]) == "Needs triage"
@@ -215,3 +217,23 @@ def test_ingest_post_retries_connection_refused(monkeypatch):
 
     assert nr_triage._post_with_retry(flaky, "http://c/ingest", {}, {}) == {"ok": True}
     assert len(calls) == 3
+
+
+def test_alert_routes_to_the_entity_repo_else_default():
+    async def go():
+        bot, svc, claude = await make_bot([], CATCHER_INGEST_TOKEN=TOKEN)
+        cases = [
+            (["notes"], "notes"),  # entity is an org repo -> that repo
+            (["release"], "agentic-demo"),  # excluded repo never targeted -> default
+            (["notes", "agentic-demo"], "agentic-demo"),  # ambiguous -> default
+            (["some-host-123"], "agentic-demo"),  # unknown -> default
+        ]
+        for i, (names, want) in enumerate(cases):
+            a = alert()
+            a["issue_id"], a["entity_names"] = f"route-{i}", names
+            assert (await bot.ingest_alerts({"issues": [a]}))["created"] == 1
+            root = [p for p in svc.posts if not p.get("root_id")][-1]
+            assert bot.db.thread(root["id"])["repo"] == want, names
+            assert f"for `{want}`" in root["message"]
+
+    asyncio.run(go())
