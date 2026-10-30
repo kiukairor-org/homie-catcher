@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 # key -> (candidate names, group). First name that exists or can be created wins.
 STATES: dict[str, tuple[tuple[str, ...], str]] = {
-    "triage": (("Triage", "Needs triage"), "backlog"),
+    "triage": (("Needs triage",), "backlog"),  # "Triage" is Plane's hidden intake state (unlisted; duplicate -> 500)
     "ready": (("Ready for agent",), "unstarted"),
     "in_progress": (("In progress",), "started"),
     "in_review": (("In review",), "started"),
