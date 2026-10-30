@@ -31,7 +31,8 @@ def test_meter_thresholds_pause_and_status_issue():
         u.record("promote", res(0.2), ok=True)  # 105%
         await bot.drain()
         assert u.state()[0] == "paused" and "daily budget reached" in u.state()[1]
-        assert len([m for m in log_msgs(svc) if "budget reached" in m]) == 1
+        blocks = [m for m in log_msgs(svc) if "Budget reached" in m]
+        assert len(blocks) == 1 and "@kiukairor" in blocks[0] and "today" in blocks[0] and "Type `unlock`" in blocks[0]
         assert not u.allow("brainstorm") and not u.allow("spec") and u.allow("review") and u.allow("agent_run")
         assert [r[0] for r in u.breakdown("day")] == ["brainstorm", "spec", "promote"]
         # status issue for the workflows (homie-catcher, label budget-status, marker)
@@ -139,5 +140,58 @@ def test_gha_ingest_skip_retry_and_forgery():
         (c,) = svc.posted_comments
         assert c["repo"] == "notes" and c["number"] == 5 and c["body"].startswith("@claude")
         assert await u.retry_skipped() == 0  # once only
+
+    asyncio.run(go())
+
+
+def test_unlock_daily_weekly_and_never_automatic():
+    async def go():
+        bot, svc, _ = await make_bot([])
+        u = bot.usage
+        assert (u.daily, u.weekly) == (15.0, 60.0)
+        clock = bot.clock
+        u.put("daily_usd", 1.0)
+        u.put("weekly_usd", 2.5)
+        await bot.handle_post(post("unlock", channel=AGENT_LOG))
+        assert "Nothing to unlock" in svc.posts[-1]["message"]
+        u.record("brainstorm", res(1.1), ok=True)  # daily block
+        await bot.drain()
+        await u.evaluate()
+        assert u.state()[0] == "paused" and len([m for m in log_msgs(svc) if "Budget reached ($1.10 today)" in m]) == 1
+        # non-owner unlock is ignored
+        n = len(svc.posts)
+        await bot.handle_post(post("unlock", user="someone-else", channel=AGENT_LOG))
+        assert len(svc.posts) == n and u.state()[0] == "paused"
+        # owner unlock in another channel (a thread in #brainstorm): +50% of daily for the rest of the day
+        root = post("hello", channel=BRAINSTORM)
+        await bot.handle_post(post("Unlock ", root=root["id"], channel=BRAINSTORM))
+        reply = [p for p in svc.posts if p.get("root_id") == root["id"]][-1]["message"]
+        assert "🔓 Unlocked: +$0.50" in reply and u.state()[0] == "ok" and u.caps()[0] == 1.6
+        assert any("owner typed `unlock` elsewhere" in m for m in log_msgs(svc))
+        # used up -> block again and ask again
+        u.record("spec", res(0.6), ok=True)
+        await bot.drain()
+        await u.evaluate()
+        assert u.state()[0] == "paused" and len([m for m in log_msgs(svc) if "Budget reached" in m]) == 2
+        # next day: daily block clears by itself, but the weekly block ($1.70 + more > $2.50) persists
+        u.put("daily_usd", 10.0)
+        assert datetime.fromtimestamp(clock.t, timezone.utc).weekday() < 6  # same ISO week tomorrow
+        clock.t += 86400
+        u.record("spec", res(1.0), ok=True)  # week = 2.7 >= 2.5
+        await bot.drain()
+        await u.evaluate()
+        st, why = u.state()
+        assert st == "paused" and "weekly budget reached" in why
+        assert any("this week" in m and "Budget reached" in m for m in log_msgs(svc))
+        clock.t += 3600
+        await u.evaluate()
+        assert u.state()[0] == "paused"  # never auto-unlocked
+        await bot.handle_post(post("unlock", channel=IDEAS))
+        assert "Unlocked: +$5.00" in svc.posts[-2]["message"] and u.state()[0] == "ok"
+        # real usage limit is separate: unlock does not lift it
+        u.set_limit(clock.t + 3600, "test")
+        await bot.drain()
+        await bot.handle_post(post("unlock", channel=AGENT_LOG))
+        assert "cannot lift a real Max usage limit" in svc.posts[-1]["message"] and u.state()[0] == "limit"
 
     asyncio.run(go())

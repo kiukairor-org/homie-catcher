@@ -11,7 +11,10 @@ Sources (verified 2026-10-30):
 - GitHub Actions runs (claude-code-action v1.0.251): the last element of `execution_file` (same fields),
   posted by the workflows as a hidden `<!-- homie-usage {...} -->` comment that the catcher polls (no inbound path).
 
-States: ok | paused (manual pause, or a budget reached and no override) | limit (real usage limit until reset).
+States: ok | paused (manual pause, or a budget reached and no override/unlock) | limit (real usage limit until reset).
+Block (D68): when the daily or weekly budget is reached, new Claude work stops and #agent-log asks the owner ONCE
+to type `unlock`. `unlock` raises each reached cap to spent + 50% of the daily budget for the rest of the UTC day;
+never automatic. Midnight UTC clears a daily block (new day); a weekly block comes back each day until unlocked.
 Published for the workflows in the `budget-status` issue of kiukairor-org/homie-catcher (the bot App cannot
 write Actions variables: no `variables` permission).
 """
@@ -30,9 +33,11 @@ from .routing import selectable_repos
 
 log = logging.getLogger(__name__)
 
-DEFAULT_DAILY_USD = 25.0
-DEFAULT_WEEKLY_USD = 100.0
+DEFAULT_DAILY_USD = 15.0  # D68 (owner): warn 80% = $12, block at $15
+DEFAULT_WEEKLY_USD = 60.0  # D68 (owner): warn 80% = $48, block at $60
 WARN_FRACTION = 0.8
+UNLOCK_FRACTION = 0.5  # `unlock` grants +50% of the daily budget for the rest of the UTC day (D68)
+_UNLOCK = re.compile(r"^\s*unlock\s*$", re.I)
 NONESSENTIAL = frozenset({"spec", "brainstorm", "channel_chat", "promote"})
 STATUS_LABEL = "budget-status"
 PUBLISH_HEARTBEAT_S = 600
@@ -125,6 +130,18 @@ class Usage:
     def weekly(self) -> float:
         return float(self.get("weekly_usd", DEFAULT_WEEKLY_USD))
 
+    def caps(self) -> tuple[float, float]:
+        """Effective (daily, weekly) caps today: the budgets, raised by today's `unlock`s."""
+        day, _ = _periods(self.c.clock())
+        return (max(self.daily, float(self.get(f"unlock_daily:{day}", 0))),
+                max(self.weekly, float(self.get(f"unlock_weekly:{day}", 0))))  # fmt: skip
+
+    def blocked(self) -> list[tuple[str, float]]:
+        """Reached budgets as (label, spent): [("today", 15.2), ("this week", 61.0)]."""
+        dcap, wcap = self.caps()
+        d, w = self.spent("day"), self.spent("week")
+        return [x for x, hit in ((("today", d), d >= dcap), (("this week", w), w >= wcap)) if hit]
+
     # ------------------------------------------------------------- meter
     def record(self, feature: str, result: dict | None, *, ok: bool, source: str = "catcher", repo: str | None = None,
                ref: str | None = None, error: str | None = None) -> None:  # fmt: skip
@@ -178,11 +195,12 @@ class Usage:
             return "paused", "paused by the owner (`budget pause`)"
         if float(self.get("override_until", 0)) > now:
             return "ok", "budget override active"
+        dcap, wcap = self.caps()
         d, w = self.spent("day"), self.spent("week")
-        if d >= self.daily:
-            return "paused", f"daily budget reached ({usd(d)} of {usd(self.daily)})"
-        if w >= self.weekly:
-            return "paused", f"weekly budget reached ({usd(w)} of {usd(self.weekly)})"
+        if d >= dcap:
+            return "paused", f"daily budget reached ({usd(d)} of {usd(dcap)}); owner: type `unlock`"
+        if w >= wcap:
+            return "paused", f"weekly budget reached ({usd(w)} of {usd(wcap)}); owner: type `unlock`"
         return "ok", "within budget"
 
     def allow(self, feature: str) -> bool:
@@ -191,26 +209,55 @@ class Usage:
     def paused_text(self) -> str:
         st, why = self.state()
         return (f"⏸️ Claude work is **{st}**: {why}. In-flight work finishes and the reviewer keeps running; "
-                "queued items wait. Owner: `usage`, `budget resume`, `budget override 1h`, `budget daily <n>`.")  # fmt: skip
+                "queued items wait. Owner: `unlock` (budget reached), `usage`, `budget resume`.")  # fmt: skip
 
     async def evaluate(self) -> None:
-        """80% warnings, 100% pause notice, publish the state for the workflows."""
+        """80% warnings, one block notice per block (asks for `unlock`), publish the state for the workflows."""
         day, week = _periods(self.c.clock())
         for period, spent, budget, key in (
             ("daily", self.spent("day"), self.daily, day),
             ("weekly", self.spent("week"), self.weekly, week),
         ):
-            if budget <= 0:
-                continue
-            frac = spent / budget
-            if WARN_FRACTION <= frac < 1 and self._once(f"warn:{period}:{key}:{budget}"):
-                await self._log(f"⚠️ Claude usage at **{frac:.0%}** of the {period} budget ({usd(spent)} of {usd(budget)}, "
+            if budget > 0 and WARN_FRACTION <= spent / budget < 1 and self._once(f"warn:{period}:{key}:{budget}"):
+                await self._log(f"⚠️ Claude usage at **{spent / budget:.0%}** of the {period} budget ({usd(spent)} of {usd(budget)}, "
                                 "API-equivalent cost; Max quota itself is not visible). Owner: `usage`.")  # fmt: skip
-            if frac >= 1 and self._once(f"pause:{period}:{key}:{budget}"):
-                await self._log(f"⏸️ {self.c.cfg.owner_mention} {period} Claude budget reached ({usd(spent)} of {usd(budget)}): "
-                                "brainstorm/chat replies, new specs and agent PR runs are paused. In-flight work finishes; "
-                                "the reviewer keeps running. `budget override 1h`, `budget daily <n>` or `budget weekly <n>`.")  # fmt: skip
+        st, _ = self.state()
+        hit = self.blocked()
+        # Weekly blocks are keyed per day too, so a weekly block that persists asks again each day (never auto-unlocked).
+        if st == "paused" and hit and not self.get("paused", False):
+            dcap, wcap = self.caps()
+            if self._once(f"block:{day}:{'+'.join(x for x, _ in hit)}:{dcap}:{wcap}"):
+                spent = ", ".join(f"{usd(s)} {x}" for x, s in hit)
+                await self._log(f"⛔ {self.c.cfg.owner_mention} Budget reached ({spent}). Type `unlock` to continue.\n"
+                                "_New Claude work (chats, specs, agent PRs) is stopped; in-flight work finishes and the reviewer "
+                                "keeps running._")  # fmt: skip
         await self.publish()
+
+    def is_unlock(self, text: str) -> bool:
+        return bool(_UNLOCK.match(text or ""))
+
+    async def unlock(self) -> str:
+        """Owner `unlock`: +50% of the daily budget, for the rest of the UTC day, on each reached cap."""
+        st, why = self.state()
+        if st == "limit":
+            return f"🛑 Not a budget block: {why}. `unlock` cannot lift a real Max usage limit (`budget resume` does, at your risk)."
+        if self.get("paused", False):
+            return "⏸️ Claude work is paused by you (`budget pause`); type `budget resume` to continue."
+        hit = self.blocked()
+        if not hit:
+            dcap, wcap = self.caps()
+            return (f"✅ Nothing to unlock: {usd(self.spent('day'))} of {usd(dcap)} today, "
+                    f"{usd(self.spent('week'))} of {usd(wcap)} this week.")  # fmt: skip
+        day, _ = _periods(self.c.clock())
+        extra = UNLOCK_FRACTION * self.daily
+        for label, spent in hit:
+            self.put(f"unlock_{'daily' if label == 'today' else 'weekly'}:{day}", spent + extra)
+        await self.publish(force=True)
+        retried = await self.retry_skipped()
+        dcap, wcap = self.caps()
+        msg = (f"🔓 Unlocked: +{usd(extra)} for the rest of today (UTC). Limits now {usd(dcap)} today, {usd(wcap)} this week. "
+               f"State: **{self.state()[0]}**. If this is used up I will ask again.")  # fmt: skip
+        return msg + (f" Re-triggered {retried} skipped agent run(s)." if retried else "")
 
     async def _notify_limit(self, until: float, reason: str) -> None:
         when = datetime.fromtimestamp(until, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -365,7 +412,7 @@ class Usage:
     def report(self) -> str:
         st, why = self.state()
         lines = [f"**Claude usage** (API-equivalent cost from Claude Code; the Max quota itself is not visible). State: **{st}** ({why})."]
-        for period, label, budget in (("day", "Today (UTC)", self.daily), ("week", "This week", self.weekly)):
+        for period, label, budget in zip(("day", "week"), ("Today (UTC)", "This week"), self.caps()):
             spent = self.spent(period)
             pct = f"{spent / budget:.0%}" if budget > 0 else "-"
             lines += [

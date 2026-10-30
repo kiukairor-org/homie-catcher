@@ -137,6 +137,19 @@ class Catcher:
         await self.handle_post(post)
 
     async def handle_post(self, post: dict) -> None:
+        if (  # owner `unlock` works in any channel the bot reads, root post or reply (D68)
+            post.get("user_id") in self.cfg.owner_user_ids
+            and post.get("user_id") != self.mm.bot_user_id
+            and not post.get("type")
+            and isinstance(post.get("id"), str)
+            and self.usage.is_unlock(post.get("message", ""))
+        ):
+            if self.db.mark_seen(post["id"]):
+                reply = await self.usage.unlock()
+                await self.mm.post(post["channel_id"], reply, root_id=post.get("root_id") or post["id"])
+                if post.get("channel_id") != self.agent_log_channel_id and self.agent_log_channel_id:
+                    await self.mm.post(self.agent_log_channel_id, f"{reply}\n_(owner typed `unlock` elsewhere)_")
+            return
         if self.brainstorm is not None:
             if self.brainstorm.channel_id and post.get("channel_id") == self.brainstorm.channel_id:
                 await self.brainstorm.handle_post(post)
