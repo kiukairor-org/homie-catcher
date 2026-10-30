@@ -13,7 +13,7 @@ import json
 import re
 from typing import Any
 
-ACTION_NAMES = ("choose_repo", "approve", "reject", "approve_repo", "reject_repo")
+ACTION_NAMES = ("choose_repo", "approve", "reject", "approve_repo", "reject_repo", "bs_promote", "bs_send", "bs_edit", "bs_cancel")
 
 
 def _canonical(ctx: dict[str, Any]) -> bytes:

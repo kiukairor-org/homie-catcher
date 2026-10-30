@@ -24,6 +24,7 @@ STRANGER = "strangeruserid000000000000"
 BOT = "botuserid00000000000000000"
 IDEAS = "ideaschannelid000000000000"
 AGENT_LOG = "agentlogchannelid000000000"
+BRAINSTORM = "brainstormchannelid0000000"
 ORG = "kiukairor-org"
 SECRET = "s" * 40
 
@@ -95,6 +96,7 @@ class FakeServices:
         self.issues: list[dict] = []
         self.pulls: dict[str, list[dict]] = {}
         self.app_versions: dict[str, str] = {}  # in-cluster /version URL -> version
+        self.files: dict[str, dict] = {}  # Mattermost file id -> {"info": {...}, "data": bytes}
         self.reviews: dict[int, list[dict]] = {}
         self.comments: dict[int, list[dict]] = {}
         self.check_runs: dict[str, list[dict]] = {}
@@ -103,6 +105,11 @@ class FakeServices:
     # writes by service, excluding Mattermost chat traffic
     def writes(self, service: str) -> list[Call]:
         return [c for c in self.calls if c.service == service and c.is_write and not c.path.endswith("/access_tokens")]
+
+    async def fetch_bytes(self, url, *, headers=None, max_bytes, timeout=30) -> bytes:
+        self.calls.append(Call("GET", url, None, None, dict(headers or {})))
+        fid = url.rsplit("/", 1)[1]
+        return self.files[fid]["data"][: max_bytes + 1]
 
     async def send(self, method, url, *, headers=None, json=None, params=None, timeout=30) -> Response:
         call = Call(method, url, json, params, dict(headers or {}))
@@ -120,7 +127,11 @@ class FakeServices:
             return Response(200, {"id": BOT})
         m = re.match(r"^/api/v4/teams/name/[^/]+/channels/name/([^/]+)$", path)
         if m:
-            return Response(200, {"id": {"ideas": IDEAS, "agent-log": AGENT_LOG}[m.group(1)]})
+            cid = {"ideas": IDEAS, "agent-log": AGENT_LOG, "brainstorm": BRAINSTORM}.get(m.group(1))
+            return Response(200, {"id": cid}) if cid else Response(404, {"message": "not found"})
+        m = re.match(r"^/api/v4/files/([^/]+)/info$", path)
+        if m and m.group(1) in self.files:
+            return Response(200, self.files[m.group(1)]["info"])
         if path == "/api/v4/posts" and method == "POST":
             post = {"id": f"post{next(self._seq)}", **body}
             self.posts.append(post)
@@ -243,6 +254,21 @@ class FakeClaude:
         if isinstance(out, Exception):
             raise out
         return out
+
+
+class FakeBrainstormRunner:
+    """Records every brainstorm run; returns queued outputs (dicts) or raises queued exceptions."""
+
+    def __init__(self, outputs: list[Any] | None = None) -> None:
+        self.outputs = list(outputs or [])
+        self.runs: list[dict] = []
+
+    async def run(self, **kw) -> tuple[Any, list[str]]:
+        self.runs.append(kw)
+        out = self.outputs.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out, ["WebSearch"]
 
 
 def spec(**over) -> dict:

@@ -27,6 +27,7 @@ TEMPLATE_REPO = "app-template"
 REVIEWER_LOGIN = "kiu-homie-reviewer[bot]"
 TOKEN_REFRESH_MARGIN_S = 300
 FORBIDDEN_REPOS = frozenset({"release", "papl", "homelab-gitops"})
+READONLY_TOKEN_PERMISSIONS: dict[str, str] = {"contents": "read", "issues": "read", "pull_requests": "read", "metadata": "read"}
 
 REPO_SETTINGS: dict[str, bool] = {
     "allow_auto_merge": True,
@@ -150,6 +151,21 @@ class GitHub:
             raise EndpointNotAllowed(f"repo {params['repo']!r} is off-limits")
         if "installation_id" in params and params["installation_id"] != self.installation_id:
             raise EndpointNotAllowed("unexpected installation id")
+        if ep.template.endswith("/access_tokens") and body is not None:
+            # Only down-scoped READ tokens may be requested with a body (the #brainstorm tools).
+            if not isinstance(body, dict):
+                raise EndpointNotAllowed("token request body must be an object")
+            perms, repos = body.get("permissions"), body.get("repositories")
+            if (
+                set(body) - {"permissions", "repositories"}
+                or not isinstance(perms, dict)
+                or not perms
+                or any(v != "read" for v in perms.values())
+                or set(perms) - set(READONLY_TOKEN_PERMISSIONS)
+                or not isinstance(repos, list)
+                or any(not isinstance(r, str) or r.lower() in FORBIDDEN_REPOS for r in repos)
+            ):
+                raise EndpointNotAllowed("token requests may only ask for read permissions on allowed repos")
         if ep.template == "/repos/{owner}/{repo}/generate" and params["repo"] != TEMPLATE_REPO:
             raise EndpointNotAllowed("repos may only be generated from the template repo")
         if ep.method == "PATCH" and body != REPO_SETTINGS:
@@ -174,6 +190,20 @@ class GitHub:
             exp = resp.body.get("expires_at")
             self._token_exp = datetime.fromisoformat(exp.replace("Z", "+00:00")).timestamp() if exp else self._clock() + 3000
             return self._token
+
+    async def readonly_token(self, repos: list[str]) -> str:
+        """A short-lived installation token limited to READ on ``repos`` (never the forbidden ones).
+
+        Used only by the #brainstorm read-only GitHub MCP server; GitHub enforces the scope."""
+        allowed = sorted({r for r in repos if r.lower() not in FORBIDDEN_REPOS})
+        if not allowed:
+            raise EndpointNotAllowed("no readable repos")
+        resp = await self.request(
+            "POST",
+            f"/app/installations/{self.installation_id}/access_tokens",
+            json={"repositories": allowed, "permissions": dict(READONLY_TOKEN_PERMISSIONS)},
+        )
+        return resp.body["token"]
 
     # ---- raw request -----------------------------------------------------
     async def request(self, method: str, path: str, *, json: Any = None, params: dict | None = None, ok404: bool = False) -> Response:

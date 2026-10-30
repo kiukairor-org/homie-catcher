@@ -62,12 +62,19 @@ class Catcher:
         self._wake = asyncio.Event()
         self._repos: tuple[float, list[str]] = (0.0, [])
         self._tasks: set[asyncio.Task] = set()
+        self.brainstorm: Any = None  # catcher.brainstorm.Brainstorm, attached by the app (optional)
 
     # ------------------------------------------------------------------ setup
     async def startup(self) -> None:
         await self.mm.me()
         self.ideas_channel_id = await self.mm.channel_id(self.cfg.mm_team, self.cfg.ideas_channel)
         self.agent_log_channel_id = await self.mm.channel_id(self.cfg.mm_team, self.cfg.agent_log_channel)
+        if self.brainstorm is not None:
+            try:
+                self.brainstorm.channel_id = await self.mm.channel_id(self.cfg.mm_team, self.cfg.brainstorm_channel)
+                log.info("brainstorm enabled in #%s", self.cfg.brainstorm_channel)
+            except Exception as exc:  # noqa: BLE001 - optional feature
+                log.warning("brainstorm disabled: channel #%s not found (%s)", self.cfg.brainstorm_channel, exc)
         n = self.db.requeue_interrupted()
         if n:
             log.info("re-queued %d interrupted runs", n)
@@ -114,6 +121,9 @@ class Catcher:
         await self.handle_post(post)
 
     async def handle_post(self, post: dict) -> None:
+        if self.brainstorm is not None and self.brainstorm.channel_id and post.get("channel_id") == self.brainstorm.channel_id:
+            await self.brainstorm.handle_post(post)
+            return
         if not self.accepts(post) or not self.db.mark_seen(post["id"]):
             return
         try:
@@ -361,6 +371,8 @@ class Catcher:
 
     # ------------------------------------------------------------- buttons
     async def handle_action(self, name: str, payload: Any) -> dict:
+        if name.startswith("bs_"):
+            return await self.brainstorm.handle_action(name, payload) if self.brainstorm is not None else NOT_ALLOWED
         if name not in buttons.ACTION_NAMES or not isinstance(payload, dict):
             return NOT_ALLOWED
         ctx = buttons.verify(self.cfg.action_secret, name, payload.get("context"))

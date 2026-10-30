@@ -42,7 +42,15 @@ class Config:
     poll_interval_s: int = 60
     ingest_token: str | None = field(default=None, repr=False)  # CATCHER_INGEST_TOKEN; unset -> /ingest disabled
     nr_target_repo: str = "agentic-demo"
-    app_domain: str = "tail8e3e5b.ts.net"  # APP_DOMAIN: tailnet suffix of app/preview Ingress hosts
+    app_domain: str = "tail8e3e5b.ts.net"
+    brainstorm_channel: str = "brainstorm"  # MM_BRAINSTORM_CHANNEL; missing channel = feature off
+    brainstorm_runs_per_hour: int = 30  # BRAINSTORM_RUNS_PER_HOUR (chat replies + drafts)
+    brainstorm_max_turns: int = 10  # BRAINSTORM_MAX_TURNS: Claude agentic turns per reply
+    brainstorm_draft_max_turns: int = 6
+    mm_public_url: str = "https://chat.tail8e3e5b.ts.net"  # MM_PUBLIC_URL: for thread permalinks
+    mcp_python: str = (
+        "/opt/plane-mcp/bin/python"  # runs the read-only GitHub MCP server  # APP_DOMAIN: tailnet suffix of app/preview Ingress hosts
+    )
     listen_port: int = 8080
 
     @classmethod
@@ -94,6 +102,11 @@ class Config:
             ingest_token=_ingest_token(env.get("CATCHER_INGEST_TOKEN", "")),
             nr_target_repo=env.get("NR_TARGET_REPO", "agentic-demo").strip() or "agentic-demo",
             app_domain=env.get("APP_DOMAIN", "tail8e3e5b.ts.net").strip() or "tail8e3e5b.ts.net",
+            brainstorm_channel=env.get("MM_BRAINSTORM_CHANNEL", "brainstorm").strip() or "brainstorm",
+            brainstorm_runs_per_hour=_int_between(env, "BRAINSTORM_RUNS_PER_HOUR", 30, 1, 200),
+            brainstorm_max_turns=_int_between(env, "BRAINSTORM_MAX_TURNS", 10, 2, 10),
+            mm_public_url=env.get("MM_PUBLIC_URL", "https://chat.tail8e3e5b.ts.net").strip().rstrip("/"),
+            mcp_python=env.get("MCP_PYTHON", "/opt/plane-mcp/bin/python").strip() or "/opt/plane-mcp/bin/python",
         )
 
     def secret_values(self) -> list[str]:
@@ -105,6 +118,17 @@ class Config:
             self.claude_oauth_token,
             self.ingest_token or "",
         ]
+
+
+def _int_between(env: Mapping[str, str], name: str, default: int, lo: int, hi: int) -> int:
+    raw = env.get(name, "").strip()
+    try:
+        v = int(raw) if raw else default
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be an integer") from exc
+    if not lo <= v <= hi:
+        raise ConfigError(f"{name} must be between {lo} and {hi}")
+    return v
 
 
 def _ingest_token(value: str) -> str | None:

@@ -44,6 +44,18 @@ class AiohttpTransport:
     def __init__(self, session: Any) -> None:
         self.session = session
 
+    async def fetch_bytes(self, url: str, *, headers: dict | None = None, max_bytes: int, timeout: float = 30) -> bytes:
+        """GET raw bytes (Mattermost file downloads), refusing bodies over ``max_bytes``."""
+        import aiohttp
+
+        async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            if resp.status != 200:
+                raise HttpError("GET", url, resp.status, None)
+            data = await resp.content.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise HttpError("GET", url, 413, None)
+            return data
+
     async def send(self, method, url, *, headers=None, json=None, params=None, timeout=30) -> Response:
         import aiohttp
 

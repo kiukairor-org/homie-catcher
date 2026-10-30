@@ -11,6 +11,8 @@ import os
 from aiohttp import ClientSession, web
 
 from .bot import NOT_ALLOWED, Catcher
+from .brainstorm import Brainstorm
+from .brainstorm_runner import BrainstormRunner
 from .claude_runner import ClaudeRunner
 from .config import Config
 from .db import DB
@@ -80,6 +82,11 @@ async def main() -> None:
                               plane_api_key=cfg.plane_api_key, workspace=cfg.plane_workspace_slug,
                               oauth_token=cfg.claude_oauth_token, model=cfg.claude_model)  # fmt: skip
         catcher = Catcher(cfg, DB(cfg.db_path), mm, plane, gh, claude)
+        bs_runner = BrainstormRunner(claude_bin=cfg.claude_bin, plane_mcp_bin=cfg.plane_mcp_bin, plane_base_url=cfg.plane_base_url,
+                                     plane_api_key=cfg.plane_api_key, workspace=cfg.plane_workspace_slug,
+                                     oauth_token=cfg.claude_oauth_token, github_org=cfg.github_org,
+                                     mcp_python=cfg.mcp_python, model=cfg.claude_model)  # fmt: skip
+        catcher.brainstorm = Brainstorm(catcher, bs_runner)
         await catcher.startup()
 
         runner = web.AppRunner(make_app(catcher), access_log=None)

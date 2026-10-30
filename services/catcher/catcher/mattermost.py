@@ -57,6 +57,14 @@ class Mattermost:
             post["root_id"] = root_id
         await self._req("POST", "/posts/ephemeral", {"user_id": user_id, "post": post})
 
+    async def file_info(self, file_id: str) -> dict:
+        return await self._req("GET", f"/files/{file_id}/info")
+
+    async def file_bytes(self, file_id: str, max_bytes: int) -> bytes:
+        return await self.transport.fetch_bytes(
+            f"{self.url}/api/v4/files/{file_id}", headers={"Authorization": f"Bearer {self._token}"}, max_bytes=max_bytes
+        )
+
     async def react(self, post_id: str, emoji: str = "eyes") -> None:
         await self._req("POST", "/reactions", {"user_id": self.bot_user_id, "post_id": post_id, "emoji_name": emoji})
 
