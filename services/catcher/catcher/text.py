@@ -59,3 +59,12 @@ def md_escape(text: str) -> str:
 def clip(text: str, n: int) -> str:
     text = str(text)
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+# Owner answers to "Want me to start this now?" (D73). Anything else is not a yes.
+YES_REPLY = re.compile(
+    r"^\s*(yes|y|yep|yeah|yup|sure|ok|okay|go|go ahead|go for it|do it|start it|start|please do|yes please|please)"
+    r"(\s+(please|now|it|go ahead|do it|start it))*\s*[.!👍]*\s*$",
+    re.I,
+)
+NO_REPLY = re.compile(r"^\s*(no|n|nope|not now|later|cancel|don'?t|stop)\b[\s.!]*$", re.I)

@@ -284,7 +284,13 @@ class FakeServices:
             return Response(200, {}, h)
         m = re.match(rf"^/repos/{ORG}/([^/]+)/issues/(\d+)/comments$", path)
         if m and method == "POST":
-            c = {"repo": m.group(1), "number": int(m.group(2)), **body}
+            n = len(self.posted_comments) + 1
+            c = {
+                "repo": m.group(1),
+                "number": int(m.group(2)),
+                "html_url": f"https://github.com/{ORG}/{m.group(1)}/pull/{m.group(2)}#issuecomment-{n}",
+                **body,
+            }
             self.posted_comments.append(c)
             return Response(201, c, h)
         m = re.match(rf"^/repos/{ORG}/([^/]+)/issues$", path)
@@ -416,3 +422,9 @@ def last_buttons(services: FakeServices) -> list[dict]:
 def click(btn: dict, user: str = OWNER) -> tuple[str, dict]:
     name = btn["integration"]["url"].rsplit("/", 1)[1]
     return name, {"user_id": user, "context": dict(btn["integration"]["context"])}
+
+
+def triage_mode(bot) -> None:
+    """Route items through the Approve/Reject flow (still used for work the owner did not order, e.g. NR
+    triage). Tests of the button mechanics use it; the owner-order flow (D73) has its own tests."""
+    bot.start_owner_item = bot.create_triage

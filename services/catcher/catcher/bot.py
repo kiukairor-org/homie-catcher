@@ -38,7 +38,7 @@ from .routing import (
     valid_repo_name,
 )
 from .spec import Spec, SpecError, validate_spec
-from .text import clip, defang, issue_body, md_escape, spec_html, spec_markdown
+from .text import NO_REPLY, YES_REPLY, clip, defang, issue_body, md_escape, spec_html, spec_markdown
 from .usage import Usage
 
 log = logging.getLogger(__name__)
@@ -248,8 +248,27 @@ class Catcher:
         if status in ("queued", "running"):
             await self.say(root, "I'm still working on the previous message in this thread; post again once the spec is ready.")
             return
+        if status in ("confirming", "approve_failed", "repo_failed") and YES_REPLY.match(text):
+            await self.confirm_start(item)
+            return
+        if status == "confirming":
+            self.db.transition(item["id"], ["confirming"], "rejected")
+            await self.say(root, "OK, not started. Nothing was sent to GitHub.")
+            if NO_REPLY.match(text):
+                return
         # A follow-up idea in a known thread: the thread remembers its repo.
         await self.route_new_item(root, parse_message(text))
+
+    async def confirm_start(self, item) -> None:  # noqa: ANN001
+        """Owner said yes: to "Want me to start this now?", or to retry a failed start."""
+        item_id, status = item["id"], item["status"]
+        spec = validate_spec(json.loads(item["spec_json"]))
+        if status == "confirming":
+            await self.start_now(item_id, spec, item["repo"] or item["new_repo_name"], "confirming")
+        elif status == "approve_failed" and self.db.transition(item_id, ["approve_failed"], "approving"):
+            await self._approve_existing(item_id)
+        elif status == "repo_failed" and self.db.transition(item_id, ["repo_failed"], "creating_repo"):
+            await self._create_repo(item_id)
 
     async def ask_which_app(self, root: str, item_id: int, note: str = "") -> None:
         repos = selectable_repos(await self.org_repos())[:MAX_REPO_BUTTONS]
@@ -377,10 +396,10 @@ class Catcher:
                 )
                 return
             self.db.update_item(item_id, new_repo_name=name)
-            await self.create_triage(item_id, spec, name, from_status="running")
+            await self.start_owner_item(item_id, spec, name, from_status="running")
         else:
             self.db.update_item(item_id, repo=repo)
-            await self.create_triage(item_id, spec, repo, from_status="running")
+            await self.start_owner_item(item_id, spec, repo, from_status="running")
 
     async def handle_name_reply(self, item, text: str) -> None:
         root = item["root_post_id"]
@@ -392,14 +411,14 @@ class Catcher:
             return
         self.db.update_item(item["id"], new_repo_name=name)
         spec = validate_spec(json.loads(item["spec_json"]))
-        await self.create_triage(item["id"], spec, name, from_status="running")
+        await self.start_owner_item(item["id"], spec, name, from_status="running")
 
     async def plane_project(self, key: str) -> Project:
         proj = await self.plane.ensure_project(key, self.db.plane_project(key))
         self.db.save_plane_project(proj)
         return proj
 
-    async def create_triage(self, item_id: int, spec: Spec, plane_key: str, from_status: str) -> None:
+    async def _to_app_channel(self, item_id: int, spec: Spec, plane_key: str) -> None:
         item = self.db.item(item_id)
         th0 = self.db.thread(item["root_post_id"])
         if th0 and not th0["is_new_repo"] and th0["channel_id"] == self.ideas_channel_id:
@@ -408,13 +427,60 @@ class Catcher:
                 await self.channels.move_item(item_id, plane_key, f"**{defang(spec.title)}**")
             except Exception:
                 log.exception("item %s: could not move to ~%s; staying in #ideas", item_id, plane_key)
-            item = self.db.item(item_id)
-        root = item["root_post_id"]
+
+    async def _plane_item(self, item_id: int, spec: Spec, plane_key: str) -> tuple[Project, str, Any]:
+        item = self.db.item(item_id)
         proj = await self.plane_project(plane_key)
-        wi = await self.plane.create_work_item(
-            proj, title=spec.title, description_html=spec_html(spec, item["idea"]), labels=list(spec.labels)
-        )
-        self.db.update_item(item_id, plane_project_id=proj.project_id, plane_item_id=wi["id"], plane_seq=wi.get("sequence_id"))
+        if not item["plane_item_id"]:
+            wi = await self.plane.create_work_item(
+                proj, title=spec.title, description_html=spec_html(spec, item["idea"]), labels=list(spec.labels)
+            )
+            self.db.update_item(item_id, plane_project_id=proj.project_id, plane_item_id=wi["id"], plane_seq=wi.get("sequence_id"))
+        item = self.db.item(item_id)
+        return proj, self.plane.item_url(proj.project_id, item["plane_item_id"]), item["plane_seq"]
+
+    # ------------------------------------------------- owner orders (D73)
+    async def start_owner_item(self, item_id: int, spec: Spec, plane_key: str, from_status: str) -> None:
+        """The owner's own clear instruction IS the trigger: start now, no Approve. Unclear intent: ask once."""
+        if spec.intent == "ambiguous":
+            if not self.db.transition(item_id, [from_status], "confirming"):
+                return
+            item = self.db.item(item_id)
+            target = f"new repo `{plane_key}`" if item["new_repo_name"] and not item["repo"] else f"`{plane_key}`"
+            ask = "**Want me to start this now?** Reply `yes` to start it."
+            await self.say(item["root_post_id"], f"{spec_markdown(spec)}\n\nTarget: {target}\n\n{ask}")
+            return
+        await self.start_now(item_id, spec, plane_key, from_status)
+
+    async def start_now(self, item_id: int, spec: Spec, plane_key: str, from_status: str) -> str | None:
+        """Create the Plane item, then the repo (new app) and the GitHub issue. Returns the issue URL (the proof)."""
+        item = self.db.item(item_id)
+        is_new = bool(item["new_repo_name"]) and not item["repo"]
+        if not is_new:
+            await self._to_app_channel(item_id, spec, plane_key)
+        root = self.db.item(item_id)["root_post_id"]
+        proj, url, seq = await self._plane_item(item_id, spec, plane_key)
+        if not self.db.transition(item_id, [from_status], "creating_repo" if is_new else "approving"):
+            return None
+        where = f"new repo `kiukairor-org/{plane_key}`" if is_new else f"`{plane_key}`"
+        await self.say(root, f"{spec_markdown(spec)}\n\n▶️ **Starting it now** (your instruction) for {where}. "
+                             f"Plane {proj.identifier}-{seq}: {url}")  # fmt: skip
+        if is_new:
+            await self._create_repo(item_id)
+        else:
+            await self._approve_existing(item_id)
+        item = self.db.item(item_id)
+        if item["gh_issue_url"] and self.usage.state()[0] != "ok":
+            await self.say(root, f"⏸️ The issue exists, but the agent run waits: {self.usage.state()[1]}. Type `unlock` to continue.")
+        return item["gh_issue_url"]
+
+    async def create_triage(self, item_id: int, spec: Spec, plane_key: str, from_status: str) -> None:
+        """Approve/Reject flow, only for work the owner did NOT order directly (D73)."""
+        await self._to_app_channel(item_id, spec, plane_key)
+        item = self.db.item(item_id)
+        root = item["root_post_id"]
+        proj, _, _ = await self._plane_item(item_id, spec, plane_key)
+        wi = {"id": item["plane_item_id"], "sequence_id": item["plane_seq"]}
         self.db.transition(item_id, [from_status], "triage")
         url = self.plane.item_url(proj.project_id, wi["id"])
         if self.db.thread(root)["is_new_repo"]:
@@ -490,7 +556,6 @@ class Catcher:
         return {"ephemeral_text": "Approved. Creating the GitHub issue…"}
 
     async def _approve_existing(self, item_id: int) -> None:
-        item = self.db.item(item_id)
         try:
             await self._ready_and_issue(item_id, new_app=None)
             self.db.transition(item_id, ["approving"], "approved")
@@ -498,7 +563,8 @@ class Catcher:
             log.exception("approve failed for item %s", item_id)
             self.db.update_item(item_id, error=str(exc)[:500])
             self.db.transition(item_id, ["approving"], "approve_failed")
-            await self.say(item["root_post_id"], "⚠️ Approve failed. Tap Approve again to retry.")
+            msg = "⚠️ Creating the GitHub issue failed; nothing reached the agent. Reply `yes` (or tap Approve) to retry."
+            await self.say(self.db.item(item_id)["root_post_id"], msg)
 
     async def _ready_and_issue(self, item_id: int, new_app: str | None) -> None:
         item = self.db.item(item_id)
@@ -585,7 +651,7 @@ class Catcher:
             log.exception("repo creation failed for item %s at %s", item_id, step)
             self.db.update_item(item_id, error=f"{step}: {exc}"[:500])
             self.db.transition(item_id, ["creating_repo"], "repo_failed")
-            await self.say(root, f"⚠️ Repo creation failed at step `{step}`. Tap Approve repo again to retry, or Reject.")
+            await self.say(root, f"⚠️ Repo creation failed at step `{step}`; nothing reached the agent. Reply `yes` to retry.")
 
     # ------------------------------------------------------- New Relic alerts
     async def ingest_alerts(self, payload: Any) -> dict:

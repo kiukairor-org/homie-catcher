@@ -1,11 +1,12 @@
 import asyncio
 
 from catcher import buttons
-from tests.fakes import ORG, OWNER, STRANGER, click, last_buttons, make_bot, post, spec
+from tests.fakes import ORG, OWNER, STRANGER, click, last_buttons, make_bot, post, spec, triage_mode
 
 
 async def _triaged(outputs=None, msg="work on notes: dark mode"):
     bot, svc, claude = await make_bot(outputs or [spec()])
+    triage_mode(bot)
     p = post(msg)
     await bot.handle_post(p)
     await bot.run_next()

@@ -1,12 +1,13 @@
 import asyncio
 
 from catcher.poller import DEPLOY_TIMEOUT_S, Poller, pr_matches_issue, preview_version_url, prod_version_url
-from tests.fakes import ORG, click, last_buttons, make_bot, post, spec
+from tests.fakes import ORG, click, last_buttons, make_bot, post, spec, triage_mode
 
 
 def test_rate_limit_queues_beyond_limit():
     async def go():
         bot, svc, claude = await make_bot([spec() for _ in range(3)], CLAUDE_RUNS_PER_HOUR="2")
+        triage_mode(bot)
         for i in range(3):
             await bot.handle_post(post(f"work on notes: idea {i}"))
         assert await bot.run_next() and await bot.run_next()
@@ -34,6 +35,7 @@ def test_pr_matching():
 def test_poller_announces_each_milestone_once():
     async def go():
         bot, svc, claude = await make_bot([spec()])
+        triage_mode(bot)
         p = post("work on notes: dark mode")
         await bot.handle_post(p)
         await bot.run_next()
@@ -100,6 +102,7 @@ def test_poller_announces_each_milestone_once():
 def test_poller_respects_rate_limit():
     async def go():
         bot, svc, claude = await make_bot([])
+        triage_mode(bot)
         bot.gh.rate_remaining, bot.gh.rate_reset = 10, bot.clock.t + 600
         assert bot.gh.rate_limited()
         bot.clock.t += 601
@@ -111,6 +114,7 @@ def test_poller_respects_rate_limit():
 def test_poller_deploy_timeout_warns_owner():
     async def go():
         bot, svc, claude = await make_bot([spec()])
+        triage_mode(bot)
         p = post("work on notes: dark mode")
         await bot.handle_post(p)
         await bot.run_next()

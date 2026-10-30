@@ -4,7 +4,7 @@ import json
 
 from catcher.brainstorm import MAX_OWNER_TURNS, Brainstorm
 from catcher.github import EndpointNotAllowed
-from tests.fakes import BRAINSTORM, IDEAS, ORG, STRANGER, FakeBrainstormRunner, click, make_bot, post
+from tests.fakes import BRAINSTORM, IDEAS, ORG, STRANGER, FakeBrainstormRunner, make_bot, post
 
 DRAFT = {
     "title": "Roll multiple dice (NdM)",
@@ -33,13 +33,13 @@ def buttons_of(p):
     return atts[0].get("actions", []) if atts else []
 
 
-def test_owner_only_history_images_and_promote_offer():
+def ans(reply):
+    return {"reply": reply, "intent": "answer", "request": None}
+
+
+def test_owner_only_history_images_and_plain_answers():
     async def go():
-        bot, svc, claude, runner = await setup([
-            {"reply": "Here's an idea, @channel: use **NdM**.", "ready_to_build": False},
-            {"reply": "Looks solid.", "ready_to_build": True},
-            {"reply": "Still fine.", "ready_to_build": True},
-        ])  # fmt: skip
+        bot, svc, claude, runner = await setup([ans("Here's an idea, @channel: use **NdM**."), ans("Looks solid."), ans("Still fine.")])
         # a stranger is ignored entirely
         await bot.handle_post(post("hi", user=STRANGER, channel=BRAINSTORM))
         assert runner.runs == []
@@ -56,85 +56,111 @@ def test_owner_only_history_images_and_promote_offer():
         assert "release" not in r0["repos"] and "papl" not in r0["repos"]
         reply = thread_posts(svc, root["id"])[-1]
         assert "@​channel" in reply["message"] and "**NdM**" in reply["message"]  # markdown kept, mention defanged
-        assert not buttons_of(reply)
-        # second turn carries the history; ready_to_build -> one Promote offer, only once
+        # questions get plain answers: no buttons, no drafts, nothing started
         await bot.handle_post(post("ok what about 3d6", channel=BRAINSTORM, root=root["id"]))
         assert "Here's an idea" in runner.runs[1]["text"] and "dice notation" in runner.runs[1]["text"]
-        assert [b["name"] for b in buttons_of(thread_posts(svc, root["id"])[-1])] == ["Promote"]
         await bot.handle_post(post("and 2d20?", channel=BRAINSTORM, root=root["id"]))
-        assert not buttons_of(thread_posts(svc, root["id"])[-1])
+        assert not any(buttons_of(p) for p in thread_posts(svc, root["id"]))
         assert len(bot.brainstorm.messages(root["id"])) == 6
+        assert not svc.issues and not svc.plane_items and claude.prompts == []
 
     asyncio.run(go())
 
 
-def test_promote_edit_send_creates_ideas_item_without_spec_run():
+def test_owner_order_starts_issue_immediately_with_proof_link():
     async def go():
-        v2 = dict(DRAFT, out_of_scope=["Modifiers like +2", "More than 20 dice"])
-        bot, svc, claude, runner = await setup([{"reply": "Sure.", "ready_to_build": True}, DRAFT, v2])
-        root = post("multi-dice rolls", channel=BRAINSTORM)
+        bot, svc, claude, runner = await setup([{"reply": "Adding NdM rolls to notes.", "intent": "order", "request": DRAFT}])
+        root = post("add multi-dice rolls to notes", channel=BRAINSTORM)
+        await bot.handle_post(root)
+        await bot.drain()
+        # issue created at once: no draft, no Send button, no Approve in #ideas, no Claude spec run
+        (issue,) = svc.issues
+        assert issue["repo"] == "notes" and issue["title"] == "Roll multiple dice (NdM)" and issue["labels"] == ["agent"]
+        assert claude.prompts == []
+        ideas_root = next(p for p in svc.posts if p["channel_id"] == IDEAS and not p.get("root_id"))
+        assert ideas_root["message"].startswith("💡 **Owner order from #brainstorm**")
+        assert not any(b["name"] in ("Approve", "Send to #ideas", "Send to agent") for p in svc.posts for b in buttons_of(p))
+        (wi,) = svc.plane_items.values()
+        assert svc.plane_state_name(wi["id"]) == "Ready for agent"
+        last = thread_posts(svc, root["id"])[-1]["message"]
+        assert last == f"✅ Started: GitHub issue in `notes`: {issue['html_url']}"
+        th = bot.brainstorm.thread(root["id"])
+        assert th["handoff_url"] == issue["html_url"] and th["status"] == "sent"
+
+    asyncio.run(go())
+
+
+def test_ambiguous_asks_once_yes_starts_no_does_nothing():
+    async def go():
+        bot, svc, claude, runner = await setup([
+            {"reply": "That could work.", "intent": "ambiguous", "request": DRAFT},
+            {"reply": "Maybe later then.", "intent": "ambiguous", "request": DRAFT},
+            ans("Sure, here's how dice work."),
+        ])  # fmt: skip
+        root = post("maybe notes could roll dice?", channel=BRAINSTORM)
         await bot.handle_post(root)
         rid = root["id"]
-        await bot.handle_post(post("promote", channel=BRAINSTORM, root=rid))
-        d1 = next(p for p in thread_posts(svc, rid) if p["message"].startswith("**Feature request draft v1**"))
-        assert (
-            "**Target app:** `notes`" in d1["message"]
-            and "**Brainstorm thread:** https://chat.tail8e3e5b.ts.net/homie/pl/" + rid in d1["message"]
-        )
-        btn = {b["name"]: b for b in buttons_of(d1)}
-        assert list(btn) == ["Send to #ideas", "Edit", "Cancel"]
-        # only the owner may press them
-        assert await bot.handle_action(*click(btn["Send to #ideas"], user=STRANGER)) == {"ephemeral_text": "not allowed"}
-        # Edit -> corrections -> v2; v1 retired and its buttons refused
-        assert (await bot.handle_action(*click(btn["Edit"])))["ephemeral_text"].startswith("Waiting")
+        assert thread_posts(svc, rid)[-1]["message"].endswith("**Want me to start this now?**")
+        assert not svc.issues and bot.brainstorm.thread(rid)["status"] == "confirm"
+        await bot.handle_post(post("yes please", channel=BRAINSTORM, root=rid))
         await bot.drain()
-        await bot.handle_post(post("cap N at 20", channel=BRAINSTORM, root=rid))
-        assert "<corrections>\ncap N at 20\n</corrections>" in runner.runs[2]["text"] and "Previous draft" in runner.runs[2]["text"]
-        d2 = next(p for p in thread_posts(svc, rid) if p["message"].startswith("**Feature request draft v2**"))
-        assert "More than 20 dice" in d2["message"]
-        assert d1["message"] == "_Superseded by a newer draft._" and d1["props"]["attachments"] == []
-        assert "superseded" in (await bot.handle_action(*click(btn["Send to #ideas"])))["ephemeral_text"]
-        assert not [p for p in svc.posts if p["channel_id"] == IDEAS]
-        # Send v2 -> #ideas root + normal triage (Plane + Approve/Reject), no Claude spec run, no GitHub issue
-        send = {b["name"]: b for b in buttons_of(d2)}["Send to #ideas"]
-        assert (await bot.handle_action(*click(send)))["ephemeral_text"].startswith("Sending")
-        await bot.drain()
-        ideas_root = next(p for p in svc.posts if p["channel_id"] == IDEAS and not p.get("root_id"))
-        assert ideas_root["message"].startswith("💡 **Feature request from brainstorm by kiukairor**")
-        triage = [p for p in svc.posts if p.get("root_id") == ideas_root["id"]]
-        assert [b["name"] for b in buttons_of(triage[-1])] == ["Approve", "Reject"]
-        assert claude.prompts == [] and not svc.issues
-        (wi,) = svc.plane_items.values()
-        assert wi["name"] == "Roll multiple dice (NdM)" and "Out of scope" in wi["description_html"]
-        assert svc.plane_state_name(wi["id"]) == "Needs triage"
-        assert bot.brainstorm.thread(rid)["status"] == "sent"
-        assert "✅ Sent to #ideas" in thread_posts(svc, rid)[-1]["message"]
-        # pressing Send again does nothing
-        assert (await bot.handle_action(*click(send)))["ephemeral_text"] == "Already handled."
+        assert len(runner.runs) == 1 and len(svc.issues) == 1  # the yes is the order: no extra Claude run
+        assert thread_posts(svc, rid)[-1]["message"].startswith("✅ Started: GitHub issue in `notes`")
+        # a second ambiguous idea, then something other than yes: nothing is started, the chat continues
+        root2 = post("what if notes had dice?", channel=BRAINSTORM)
+        await bot.handle_post(root2)
+        await bot.handle_post(post("how do dice notations work?", channel=BRAINSTORM, root=root2["id"]))
+        assert len(svc.issues) == 1 and len(runner.runs) == 3 and bot.brainstorm.thread(root2["id"])["status"] == "chat"
 
     asyncio.run(go())
 
 
-def test_bad_target_disables_send_and_cancel_returns_to_chat():
+def test_order_with_invalid_target_reports_nothing_sent():
     async def go():
         bad = dict(DRAFT, target={"kind": "existing", "repo": "release"})
-        bot, svc, claude, runner = await setup([{"reply": "ok", "ready_to_build": False}, bad])
-        root = post("idea", channel=BRAINSTORM)
+        bot, svc, claude, runner = await setup([{"reply": "Doing it.", "intent": "order", "request": bad}])
+        root = post("add dice to release", channel=BRAINSTORM)
         await bot.handle_post(root)
-        await bot.handle_post(post("promote", channel=BRAINSTORM, root=root["id"]))
-        d1 = [p for p in thread_posts(svc, root["id"]) if "draft v1" in p["message"]][0]
-        assert [b["name"] for b in buttons_of(d1)] == ["Edit", "Cancel"] and "not an org app repo" in d1["message"]
-        cancel = buttons_of(d1)[1]
-        await bot.handle_action(*click(cancel))
-        await bot.drain()
-        assert bot.brainstorm.thread(root["id"])["status"] == "chat"
+        assert not svc.issues
+        assert "⚠️ Could not start it" in thread_posts(svc, root["id"])[-1]["message"]
+        assert "Nothing has been sent to the agent" in thread_posts(svc, root["id"])[-1]["message"]
+
+    asyncio.run(go())
+
+
+def test_truthfulness_guard_phrasings_and_reply():
+    from catcher.brainstorm import implies_handoff
+
+    claims = [
+        "I'm sending your feedback to the agent now.", "I've forwarded this to the agent.",
+        "Done — I've created an issue for the redesign.", "Your feedback has been sent to the agent.",
+        "I've queued the work.", "The agent is on it.", "I'll pass this on to the agent.", "Sending work to the agent!",
+        "I opened a GitHub issue for this.", "Ticket created in Plane.", "OK, I will tell the agent to use design skills.",
+        "Great, the redesign is on its way.", "I went ahead and filed a ticket.", "We have started the fix.",
+    ]  # fmt: skip
+    honest = [
+        "I can't send anything to the agent myself.", "Only you can send this, with the button.", "Nothing has been sent yet.",
+        "Want me to start this now?", "I didn't create an issue.", "I read web/index.html and compared it with your screenshot.",
+        "The agent will need a clear scope.", "Issue #1 and PR #2 are closed.", "PR #2 was escalated to a human (1112 lines).",
+        "I created a short list of options below.", "I can help tighten the request.", "Shall I open an issue for it?",
+        "I started by reading the README.", "You sent no question, so tell me if you meant something else.",
+    ]  # fmt: skip
+    assert [c for c in claims if not implies_handoff(c)] == []
+    assert [h for h in honest if implies_handoff(h)] == []
+
+    async def go():
+        bot, svc, claude, runner = await setup([ans("Got it. I've forwarded your feedback to the agent.")])
+        root = post("it is ugly", channel=BRAINSTORM)
+        await bot.handle_post(root)
+        msg = thread_posts(svc, root["id"])[-1]["message"]
+        assert msg.endswith("⚠️ Nothing has been sent to the agent from this message.") and not svc.issues
 
     asyncio.run(go())
 
 
 def test_thread_turn_cap_and_ideas_untouched_by_brainstorm_posts():
     async def go():
-        bot, svc, claude, runner = await setup([{"reply": "r", "ready_to_build": False}] * MAX_OWNER_TURNS)
+        bot, svc, claude, runner = await setup([ans("r")] * MAX_OWNER_TURNS)
         root = post("t0", channel=BRAINSTORM)
         await bot.handle_post(root)
         for i in range(1, MAX_OWNER_TURNS + 1):

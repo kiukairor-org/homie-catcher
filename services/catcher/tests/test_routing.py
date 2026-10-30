@@ -10,7 +10,7 @@ from catcher.routing import (
     selectable_repos,
     valid_repo_name,
 )
-from tests.fakes import STRANGER, last_buttons, make_bot, post, spec
+from tests.fakes import STRANGER, last_buttons, make_bot, post, spec, triage_mode
 
 
 def test_parse_forms():
@@ -61,6 +61,7 @@ def test_pick_free_name_taken_appends_suffix():
 def test_named_repo_routes_without_asking():
     async def go():
         bot, svc, claude = await make_bot([spec()])
+        triage_mode(bot)
         await bot.handle_post(post("work on agentic-demo: add dark mode"))
         await bot.run_next()
         assert "kiukairor-org/agentic-demo" in claude.prompts[0]
@@ -73,6 +74,7 @@ def test_named_repo_routes_without_asking():
 def test_unknown_or_excluded_repo_asks_which_app():
     async def go():
         bot, svc, claude = await make_bot([spec()])
+        triage_mode(bot)
         await bot.handle_post(post("work on papl: do something"))
         btns = last_buttons(svc)
         names = [b["name"] for b in btns]
@@ -86,6 +88,7 @@ def test_unknown_or_excluded_repo_asks_which_app():
 def test_no_repo_asks_which_app_then_button_routes():
     async def go():
         bot, svc, claude = await make_bot([spec()])
+        triage_mode(bot)
         p = post("add dark mode")
         await bot.handle_post(p)
         btns = last_buttons(svc)
@@ -104,6 +107,7 @@ def test_no_repo_asks_which_app_then_button_routes():
 def test_thread_reply_reuses_remembered_repo():
     async def go():
         bot, svc, claude = await make_bot([spec(), spec(title="Also a high-contrast theme")])
+        triage_mode(bot)
         root = post("work on notes: dark mode")
         await bot.handle_post(root)
         await bot.run_next()
@@ -120,6 +124,7 @@ def test_thread_reply_reuses_remembered_repo():
 def test_new_repo_name_taken_gets_suffix():
     async def go():
         bot, svc, claude = await make_bot([spec(new_repo={"name": "notes", "description": "x"})])
+        triage_mode(bot)
         root = post("new idea: a notes app")
         await bot.handle_post(root)
         await bot.run_next()
@@ -132,6 +137,7 @@ def test_new_repo_name_taken_gets_suffix():
 def test_new_repo_invalid_name_asks_owner():
     async def go():
         bot, svc, claude = await make_bot([spec(new_repo={"name": "!!!", "description": "x"})])
+        triage_mode(bot)
         root = post("new idea: a notes app")
         await bot.handle_post(root)
         await bot.run_next()
@@ -148,6 +154,7 @@ def test_new_repo_invalid_name_asks_owner():
 def test_user_allowlist_and_channel_and_self():
     async def go():
         bot, svc, claude = await make_bot([spec()])
+        triage_mode(bot)
         await bot.handle_post(post("work on notes: x", user=STRANGER))
         await bot.handle_post(post("work on notes: x", channel="otherchannel00000000000000"))
         await bot.handle_post(post("work on notes: x", user=bot.mm.bot_user_id))

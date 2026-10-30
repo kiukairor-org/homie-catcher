@@ -10,6 +10,8 @@ from jsonschema import Draft202012Validator
 
 ACTIONS = ("create", "clarify", "choose_repo")
 LABELS = ("feature", "bug", "chore")
+# D73: the owner's own clear instruction starts the work; "ambiguous" asks "Want me to start this now?" first.
+INTENTS = ("order", "ambiguous")
 
 # Sent to Claude Code via --json-schema (kept to widely supported keywords).
 CLAUDE_SCHEMA: dict[str, Any] = {
@@ -43,6 +45,7 @@ CLAUDE_SCHEMA: dict[str, Any] = {
             },
         },
         "duplicate_of": {"type": "string", "maxLength": 200},
+        "intent": {"type": "string", "enum": list(INTENTS)},
     },
 }
 
@@ -77,6 +80,7 @@ class Spec:
     target_repo: str | None = None
     new_repo: NewRepo | None = None
     duplicate_of: str | None = None
+    intent: str = "order"
     raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
@@ -98,5 +102,6 @@ def validate_spec(data: Any) -> Spec:
         target_repo=data.get("target_repo"),
         new_repo=NewRepo(nr["name"], nr["description"]) if nr else None,
         duplicate_of=data.get("duplicate_of"),
+        intent=data.get("intent", "order"),
         raw=copy.deepcopy(data),
     )

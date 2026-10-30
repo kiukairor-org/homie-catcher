@@ -3,12 +3,13 @@ import asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
 from catcher.app import make_app
-from tests.fakes import STRANGER, click, last_buttons, make_bot, post, spec
+from tests.fakes import STRANGER, click, last_buttons, make_bot, post, spec, triage_mode
 
 
 def test_http_endpoints():
     async def go():
         bot, svc, claude = await make_bot([spec()])
+        triage_mode(bot)
         p = post("work on notes: dark mode")
         await bot.handle_post(p)
         await bot.run_next()

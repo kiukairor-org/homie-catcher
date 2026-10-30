@@ -116,9 +116,11 @@ def test_app_channels_backfill_progress_move_and_pretargeted_chat():
         bot, svc, claude = await make_bot([spec()], APP_CHANNELS="true")
         svc.repos.add("dice-service")
         runner = FakeBrainstormRunner([
-            {"reply": "Dice ideas.", "ready_to_build": True},
-            {"title": "Add 3d6", "target": {"kind": "existing", "repo": "agentic-demo"}, "problem": "Players want several dice.",
-             "build": ["parse NdM", "roll N dice", "sum them"], "acceptance_criteria": ["3d6 works", "bad input is 400"], "out_of_scope": []},
+            {"reply": "Dice ideas.", "intent": "answer", "request": None},
+            {"reply": "Adding 3d6.", "intent": "order", "request": {
+                "title": "Add 3d6", "target": {"kind": "existing", "repo": "agentic-demo"}, "problem": "Players want several dice.",
+                "build": ["parse NdM", "roll N dice", "sum them"], "acceptance_criteria": ["3d6 works", "bad input is 400"],
+                "out_of_scope": [], "related_pr": None}},
         ])  # fmt: skip
         bot.brainstorm = Brainstorm(bot, runner)
         await bot.startup()
@@ -127,30 +129,26 @@ def test_app_channels_backfill_progress_move_and_pretargeted_chat():
         assert OWNER in svc.channel_members["dice-service"]
         ch = bot.channels.channel_for_repo("dice-service")
         assert any(p["channel_id"] == ch and "channel for **kiukairor-org/dice-service**" in p["message"] for p in svc.posts)
-        # an #ideas item for an existing repo moves to ~repo (pointer left in #ideas)
+        # an owner's #ideas order for an existing repo moves to ~repo and starts at once (no Approve, D73)
         p = post("work on dice-service: add 3d6")
         await bot.handle_post(p)
         await bot.run_next()
         assert "Continues in ~dice-service" in thread(svc, p["id"])[-1]["message"]
         moved = [x for x in svc.posts if x["channel_id"] == ch and x.get("root_id")]
-        assert any([b["name"] for b in (x.get("props") or {}).get("attachments", [{}])[0].get("actions", [])] == ["Approve", "Reject"]
-                   for x in moved if (x.get("props") or {}).get("attachments"))  # fmt: skip
-        # chat in ~dice-service: repo context preloaded; "do it" drafts pinned to the repo (Claude said agentic-demo)
+        assert not any((x.get("props") or {}).get("attachments") for x in moved)
+        assert any("▶️ **Starting it now**" in x["message"] for x in moved)
+        assert any(x["message"].startswith("📋 GitHub issue opened") for x in moved)
+        assert [i["repo"] for i in svc.issues] == ["dice-service"]
+        # chat in ~dice-service: repo context preloaded; an order is pinned to the channel's repo (Claude said agentic-demo)
         root = post("multi-dice?", channel=ch)
         await bot.handle_post(root)
         assert '<repo_context repo="dice-service">' in runner.runs[0]["text"] and "Rolls dice." in runner.runs[0]["text"]
-        await bot.handle_post(post("do it", channel=ch, root=root["id"]))
-        draft = [x for x in thread(svc, root["id"]) if "Feature request draft v1" in x["message"]][-1]
-        assert "**Target app:** `dice-service`" in draft["message"]
-        send = [b for b in draft["props"]["attachments"][0]["actions"] if b["name"] == "Send to ~dice-service"][0]
-        await bot.handle_action(*click(send))
+        await bot.handle_post(post("add 3d6 please", channel=ch, root=root["id"]))
         await bot.drain()
-        sent_root = [x for x in svc.posts if x["channel_id"] == ch and not x.get("root_id") and "Feature request from chat" in x["message"]]
-        assert sent_root, "request stays in ~dice-service"
-        assert not [x for x in svc.posts if x["channel_id"] == IDEAS and "from chat" in x["message"]]
-        tri = thread(svc, sent_root[0]["id"])
-        assert [b["name"] for b in tri[-1]["props"]["attachments"][0]["actions"]] == ["Approve", "Reject"]
-        assert not svc.issues and len(claude.prompts) == 1  # the only spec run was the #ideas item
+        assert [i["repo"] for i in svc.issues] == ["dice-service", "dice-service"]
+        assert thread(svc, root["id"])[-1]["message"] == f"✅ Started: GitHub issue in `dice-service`: {svc.issues[1]['html_url']}"
+        assert not [x for x in svc.posts if x["channel_id"] == IDEAS and "Owner order" in x["message"]]
+        assert len(claude.prompts) == 1  # the only spec run was the #ideas item
         # retired repos never get a channel back from reconcile
         bot.admin._save_state("dice-service", "retired")
         svc.channels["dice-service"]["delete_at"] = 1
