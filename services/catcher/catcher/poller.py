@@ -55,6 +55,9 @@ class Poller:
                 else:
                     await self.poll_once()
                 await self.c.channels.reconcile()  # app channels backfill (every 30 min)
+                self._ticks = getattr(self, "_ticks", 0) + 1
+                if self._ticks % 5 == 1:  # usage: GitHub Actions usage, warnings, status issue, retries
+                    await self.c.usage.tick()
             except Exception:
                 log.exception("poll failed")
             await asyncio.sleep(interval)

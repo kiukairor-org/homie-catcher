@@ -142,7 +142,7 @@ def test_app_channels_backfill_progress_move_and_pretargeted_chat():
         await bot.handle_post(post("do it", channel=ch, root=root["id"]))
         draft = [x for x in thread(svc, root["id"]) if "Feature request draft v1" in x["message"]][-1]
         assert "**Target app:** `dice-service`" in draft["message"]
-        send = [b for b in draft["props"]["attachments"][0]["actions"] if b["name"] == "Send to #ideas"][0]
+        send = [b for b in draft["props"]["attachments"][0]["actions"] if b["name"] == "Send to ~dice-service"][0]
         await bot.handle_action(*click(send))
         await bot.drain()
         sent_root = [x for x in svc.posts if x["channel_id"] == ch and not x.get("root_id") and "Feature request from chat" in x["message"]]

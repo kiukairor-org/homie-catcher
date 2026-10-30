@@ -211,8 +211,8 @@ class Admin:
         cached = self.c.db.plane_project(repo)
         st = self.state(repo)
         pid = (cached.project_id if cached else None) or (st["plane_project_id"] if st else None)
-        if pid:
-            return {"id": pid, "identifier": cached.identifier if cached else pid[:8]}
+        if pid and cached:
+            return {"id": pid, "identifier": cached.identifier}
         found = await self.c.plane.find_project(repo)
         return {"id": found["id"], "identifier": found.get("identifier", "?")} if found else None
 

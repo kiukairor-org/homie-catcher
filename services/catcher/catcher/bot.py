@@ -39,6 +39,7 @@ from .routing import (
 )
 from .spec import Spec, SpecError, validate_spec
 from .text import clip, defang, issue_body, md_escape, spec_html, spec_markdown
+from .usage import Usage
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,10 @@ class Catcher:
         self.admin: Any = None
         self.admin = Admin(self)
         self.channels = AppChannels(self)
+        self.usage = Usage(self)
+        claude.on_result = lambda feature, result, err: self.usage.record(
+            feature, result, ok=bool(result) and not result.get("is_error"), error=err
+        )
 
     # ------------------------------------------------------------------ setup
     async def startup(self) -> None:
@@ -140,6 +145,16 @@ class Catcher:
             if repo:
                 await self.brainstorm.handle_post(post, repo=repo)
                 return
+        if (
+            post.get("channel_id") in (self.ideas_channel_id, self.agent_log_channel_id)
+            and post.get("user_id") in self.cfg.owner_user_ids
+            and not post.get("root_id")
+            and not post.get("type")
+            and self.usage.is_command(post.get("message", ""))
+        ):
+            if self.db.mark_seen(post["id"]):
+                await self.mm.post(post["channel_id"], await self.usage.command(post["message"]), root_id=post["id"])
+            return
         if not self.accepts(post) or not self.db.mark_seen(post["id"]):
             return
         try:
@@ -247,6 +262,11 @@ class Catcher:
         """Process one queued run if allowed. Returns True if one ran."""
         run = self.db.next_queued()
         if run is None:
+            return False
+        if not self.usage.allow("spec"):
+            if self.db.claim_milestone(run["item_id"], f"usage-paused:{self.usage.state()[0]}"):
+                item = self.db.item(run["item_id"])
+                await self.say(item["root_post_id"], self.usage.paused_text())
             return False
         if self.rate_wait() > 0:
             if self.db.claim_milestone(run["item_id"], "rate-limited"):

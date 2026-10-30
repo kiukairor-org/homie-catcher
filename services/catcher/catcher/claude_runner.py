@@ -177,6 +177,7 @@ class ClaudeRunner:
         )
         self._token = oauth_token
         self.model = model
+        self.on_result: Any = None  # usage meter hook: (feature, result dict | None, error text | None)
 
     async def run(self, prompt: str) -> Any:
         """Returns Claude's ``structured_output`` (not yet validated by us)."""
@@ -203,6 +204,12 @@ class ClaudeRunner:
                 raise ClaudeError("claude run timed out") from exc
             if proc.returncode and not out:
                 log.warning("claude exited %s with no output (%d bytes stderr)", proc.returncode, len(err))
+            if self.on_result is not None:
+                try:
+                    raw = json.loads(out.decode() or "null")
+                except ValueError:
+                    raw = None
+                self.on_result("spec", raw if isinstance(raw, dict) else None, err.decode(errors="replace")[-500:] or None)
             return parse_result(out, proc.returncode)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)

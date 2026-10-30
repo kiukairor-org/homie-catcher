@@ -87,6 +87,9 @@ async def main() -> None:
                                      oauth_token=cfg.claude_oauth_token, github_org=cfg.github_org,
                                      mcp_python=cfg.mcp_python, model=cfg.claude_model)  # fmt: skip
         catcher.brainstorm = Brainstorm(catcher, bs_runner)
+        bs_runner.on_result = lambda feature, result, err: catcher.usage.record(
+            feature, result, ok=bool(result) and not result.get("is_error"), error=err
+        )
         await catcher.startup()
 
         runner = web.AppRunner(make_app(catcher), access_log=None)

@@ -417,14 +417,17 @@ class Brainstorm:
             total += len(p)
         return "\n".join(parts[:1] + list(reversed(keep)))
 
-    async def _run(self, root: str, *, system: str, text: str, images: list, schema: dict, max_turns: int) -> Any:
+    async def _run(self, root: str, *, system: str, text: str, images: list, schema: dict, max_turns: int, feature: str) -> Any:
+        usage = getattr(self.c, "usage", None)
+        if usage is not None and not usage.allow(feature):
+            raise Paused()
         if self._runs_last_hour() >= self.cfg.brainstorm_runs_per_hour:
             raise RateLimited()
         async with self._sem:
             self._x("INSERT INTO bs_runs(started_at) VALUES(?)", (self._now(),))
             token, repos = await self._tool_access()
             out, tools = await self.runner.run(system_prompt=system, text=text, images=images, schema=schema,
-                                               max_turns=max_turns, github_token=token, repos=repos)  # fmt: skip
+                                               max_turns=max_turns, github_token=token, repos=repos, feature=feature)  # fmt: skip
             log.info("brainstorm %s: claude used tools %s", root, tools)
             return out
 
@@ -462,11 +465,15 @@ class Brainstorm:
             "",
             "Return the JSON object now.",
         ])  # fmt: skip
+        feature = "channel_chat" if th["repo"] else "brainstorm"
         try:
             out = await self._run(root, system=CHAT_SYSTEM, text=prompt, images=images, schema=CHAT_SCHEMA,
-                                  max_turns=self.cfg.brainstorm_max_turns)  # fmt: skip
+                                  max_turns=self.cfg.brainstorm_max_turns, feature=feature)  # fmt: skip
             if not isinstance(out, dict) or not isinstance(out.get("reply"), str) or not out["reply"].strip():
                 raise ClaudeError("invalid chat output")
+        except Paused:
+            await self.say(root, self.c.usage.paused_text())
+            return
         except RateLimited:
             await self.say(root, f"⏳ Brainstorm limit of {self.cfg.brainstorm_runs_per_hour} replies/hour reached; try again later.")
             return
@@ -532,8 +539,13 @@ class Brainstorm:
         for attempt in range(2):
             try:
                 draft = validate_draft(await self._run(root, system=DRAFT_SYSTEM, text="\n".join(lines), images=[],
-                                                       schema=DRAFT_SCHEMA, max_turns=self.cfg.brainstorm_draft_max_turns))  # fmt: skip
+                                                       schema=DRAFT_SCHEMA, max_turns=self.cfg.brainstorm_draft_max_turns,
+                                                       feature="promote"))  # fmt: skip
                 break
+            except Paused:
+                self._transition(root, ("drafting",), "draft" if th["draft_json"] else "chat")
+                await self.say(root, self.c.usage.paused_text())
+                return
             except RateLimited:
                 break
             except (ClaudeError, SpecError, Exception) as exc:  # noqa: BLE001
@@ -553,11 +565,12 @@ class Brainstorm:
         target, note = await self._target(d)
         actions = []
         if target:
-            actions.append(self._btn("Send to #ideas", "bs_send", root, version, "good"))
+            dest = f"~{th['repo']}" if th["repo"] else "#ideas"
+            actions.append(self._btn(f"Send to {dest}", "bs_send", root, version, "good"))
         actions += [self._btn("Edit", "bs_edit", root, version), self._btn("Cancel", "bs_cancel", root, version, "danger")]
         md = draft_markdown(d, note, self.thread_link(root))
         posted = await self.say(root, f"**Feature request draft v{version}**\n\n{md}",
-                                attachments=[{"text": "Only you can send this to #ideas.", "actions": actions}])  # fmt: skip
+                                attachments=[{"text": "Only you can send this.", "actions": actions}])  # fmt: skip
         self._set(root, draft_version=version, draft_json=json.dumps(d.raw), draft_post_id=posted.get("id"))
         self._transition(root, ("drafting",), "draft")
         if previous_post:
@@ -661,3 +674,7 @@ class Brainstorm:
 
 class RateLimited(Exception):
     pass
+
+
+class Paused(Exception):
+    """The owner's usage gate is not ok (budget paused or real usage limit)."""

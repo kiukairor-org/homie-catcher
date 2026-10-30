@@ -74,6 +74,19 @@ def user_message(text: str, images: list[tuple[str, str]]) -> bytes:
     return (json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n").encode()
 
 
+def result_event(stdout: bytes) -> dict | None:
+    """The final stream-json "result" event (usage, cost, errors), if any."""
+    last = None
+    for line in stdout.decode(errors="replace").splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            last = ev
+    return last
+
+
 def parse_stream(stdout: bytes, returncode: int | None) -> tuple[Any, list[str]]:
     """Return (structured_output, tool names used) from stream-json output."""
     tools: list[str] = []
@@ -111,6 +124,7 @@ class BrainstormRunner:
         self.github_org = github_org
         self.mcp_python = mcp_python
         self.model = model
+        self.on_result: Any = None  # usage meter hook: (feature, result dict | None, error text | None)
 
     def mcp_config(self, github_token: str, repos: list[str]) -> dict:
         cfg = json.loads(json.dumps(self._plane))
@@ -123,7 +137,7 @@ class BrainstormRunner:
         return cfg
 
     async def run(self, *, system_prompt: str, text: str, images: list[tuple[str, str]], schema: dict, max_turns: int,
-                  github_token: str, repos: list[str]) -> tuple[Any, list[str]]:  # fmt: skip
+                  github_token: str, repos: list[str], feature: str = "brainstorm") -> tuple[Any, list[str]]:  # fmt: skip
         workdir = tempfile.mkdtemp(prefix="catcher-bs-")  # empty cwd: no CLAUDE.md, no project settings
         try:
             os.chmod(workdir, 0o700)
@@ -147,6 +161,8 @@ class BrainstormRunner:
                 raise ClaudeError("claude run timed out") from exc
             if proc.returncode and not out:
                 log.warning("brainstorm claude exited %s with no output (%d bytes stderr)", proc.returncode, len(err))
+            if self.on_result is not None:
+                self.on_result(feature, result_event(out), err.decode(errors="replace")[-500:] or None)
             return parse_stream(out, proc.returncode)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
