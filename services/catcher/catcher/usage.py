@@ -59,6 +59,15 @@ CREATE TABLE IF NOT EXISTS usage_events(key TEXT PRIMARY KEY, ts REAL NOT NULL, 
 """
 
 
+def usd(v: float) -> str:
+    """$12.34, or 4 decimals under $1 (small test budgets stay readable)."""
+    return f"${v:.2f}" if abs(v) >= 1 or v == 0 else f"${v:.4f}"
+
+
+def dur(ms: float) -> str:
+    return f"{ms / 1000:.0f} s" if ms < 120_000 else f"{ms / 60000:.1f} min"
+
+
 def _periods(ts: float) -> tuple[str, str]:
     d = datetime.fromtimestamp(ts, timezone.utc)
     iso = d.isocalendar()
@@ -140,15 +149,18 @@ class Usage:
         col, val = ("day", day) if period == "day" else ("week", week)
         return float(self._x(f"SELECT COALESCE(SUM(cost_usd),0) AS s FROM claude_usage WHERE {col}=?", (val,)).fetchone()["s"])  # noqa: S608
 
-    def breakdown(self, period: str) -> list[tuple[str, int, float, int, int]]:
+    def breakdown(self, period: str) -> list[tuple[str, int, float, int, int, int]]:
+        """(feature, runs, cost, input+output tokens, cache tokens, duration ms) for the current day/week."""
         day, week = _periods(self.c.clock())
         col, val = ("day", day) if period == "day" else ("week", week)
-        rows = self._x(
-            f"SELECT feature, COUNT(*) AS n, COALESCE(SUM(cost_usd),0) AS c, COALESCE(SUM(input_tokens+output_tokens),0) AS t,"  # noqa: S608
-            f" COALESCE(SUM(duration_ms),0) AS ms FROM claude_usage WHERE {col}=? GROUP BY feature ORDER BY c DESC",
-            (val,),
-        ).fetchall()
-        return [(r["feature"], r["n"], r["c"], r["t"], r["ms"]) for r in rows]
+        sql = (
+            "SELECT feature, COUNT(*) AS n, COALESCE(SUM(cost_usd),0) AS c,"  # noqa: S608 - col is a fixed literal
+            " COALESCE(SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)),0) AS t,"
+            " COALESCE(SUM(COALESCE(cache_read,0)+COALESCE(cache_creation,0)),0) AS k,"
+            f" COALESCE(SUM(duration_ms),0) AS ms FROM claude_usage WHERE {col}=? GROUP BY feature ORDER BY c DESC"
+        )
+        rows = self._x(sql, (val,)).fetchall()
+        return [(r["feature"], r["n"], r["c"], r["t"], r["k"], r["ms"]) for r in rows]
 
     # ------------------------------------------------------------- state
     def set_limit(self, until: float, reason: str) -> None:
@@ -168,9 +180,9 @@ class Usage:
             return "ok", "budget override active"
         d, w = self.spent("day"), self.spent("week")
         if d >= self.daily:
-            return "paused", f"daily budget reached (${d:.2f} of ${self.daily:.2f})"
+            return "paused", f"daily budget reached ({usd(d)} of {usd(self.daily)})"
         if w >= self.weekly:
-            return "paused", f"weekly budget reached (${w:.2f} of ${self.weekly:.2f})"
+            return "paused", f"weekly budget reached ({usd(w)} of {usd(self.weekly)})"
         return "ok", "within budget"
 
     def allow(self, feature: str) -> bool:
@@ -192,10 +204,10 @@ class Usage:
                 continue
             frac = spent / budget
             if WARN_FRACTION <= frac < 1 and self._once(f"warn:{period}:{key}:{budget}"):
-                await self._log(f"⚠️ Claude usage at **{frac:.0%}** of the {period} budget (${spent:.2f} of ${budget:.2f}, "
+                await self._log(f"⚠️ Claude usage at **{frac:.0%}** of the {period} budget ({usd(spent)} of {usd(budget)}, "
                                 "API-equivalent cost; Max quota itself is not visible). Owner: `usage`.")  # fmt: skip
             if frac >= 1 and self._once(f"pause:{period}:{key}:{budget}"):
-                await self._log(f"⏸️ {self.c.cfg.owner_mention} {period} Claude budget reached (${spent:.2f} of ${budget:.2f}): "
+                await self._log(f"⏸️ {self.c.cfg.owner_mention} {period} Claude budget reached ({usd(spent)} of {usd(budget)}): "
                                 "brainstorm/chat replies, new specs and agent PR runs are paused. In-flight work finishes; "
                                 "the reviewer keeps running. `budget override 1h`, `budget daily <n>` or `budget weekly <n>`.")  # fmt: skip
         await self.publish()
@@ -330,7 +342,7 @@ class Usage:
                 return "Budget must be between 0 and 10000 (USD-equivalent)."
             self.put(f"{m.group(2).lower()}_usd", val)
             await self.evaluate()
-            return f"✅ {m.group(2).lower()} budget set to ${val:.2f}. Now: {self.state()[0]} ({self.state()[1]})."
+            return f"✅ {m.group(2).lower()} budget set to {usd(val)}. Now: {self.state()[0]} ({self.state()[1]})."
         if m.group(4):
             if m.group(4).lower() == "pause":
                 self.put("paused", True)
@@ -358,12 +370,12 @@ class Usage:
             pct = f"{spent / budget:.0%}" if budget > 0 else "-"
             lines += [
                 "",
-                f"**{label}:** ${spent:.2f} of ${budget:.2f} ({pct})",
-                "| feature | runs | ≈USD | tokens | time |",
-                "|---|---:|---:|---:|---:|",
+                f"**{label}:** {usd(spent)} of {usd(budget)} ({pct})",
+                "| feature | runs | ≈USD | tokens in+out | cache tokens | time |",
+                "|---|---:|---:|---:|---:|---:|",
             ]
-            rows = self.breakdown(period) or [("(none)", 0, 0.0, 0, 0)]
-            lines += [f"| {f} | {n} | {c:.2f} | {t:,} | {ms / 60000:.1f} min |" for f, n, c, t, ms in rows]
+            rows = self.breakdown(period) or [("(none)", 0, 0.0, 0, 0, 0)]
+            lines += [f"| {f} | {n} | {usd(c)} | {t:,} | {k:,} | {dur(ms)} |" for f, n, c, t, k, ms in rows]
         return "\n".join(lines)
 
 

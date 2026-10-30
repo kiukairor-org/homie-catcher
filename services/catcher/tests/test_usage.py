@@ -82,7 +82,7 @@ def test_commands_and_report():
             await bot.handle_post(p)
         replies = [x["message"] for x in svc.posts if x["channel_id"] == IDEAS and x.get("root_id")]
         assert replies[0].startswith("✅ daily budget set to $5.00") and replies[1].startswith("✅ weekly budget set to $30.00")
-        assert "| brainstorm | 1 | 0.12 |" in replies[2] and "of $5.00" in replies[2] and "of $30.00" in replies[2]
+        assert "| brainstorm | 1 | $0.1200 | 30 | 6 | 1 s |" in replies[2] and "of $5.00" in replies[2] and "of $30.00" in replies[2]
         assert "between 0 and 10000" in replies[3] and "1-24 hours" in replies[4]
         assert u.daily == 5.0 and u.weekly == 30.0
 
