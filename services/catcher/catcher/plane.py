@@ -133,7 +133,10 @@ class Plane:
 
     async def _ensure_states(self, project_id: str) -> dict[str, str]:
         resp = await self._req("GET", f"/projects/{project_id}/states/")
-        existing = {s["name"].lower(): s for s in _results(resp.body) if s.get("group") != "triage"}
+        states = _results(resp.body)
+        existing = {s["name"].lower(): s for s in states if s.get("group") != "triage"}
+        # Plane's own intake state (group "triage") reserves its name; creating a duplicate is a 500, not a 409.
+        reserved = {s["name"].lower() for s in states if s.get("group") == "triage"}
         out: dict[str, str] = {}
         for key, (names, group) in STATES.items():
             hit = next((existing[n.lower()] for n in names if n.lower() in existing), None)
@@ -141,6 +144,9 @@ class Plane:
                 out[key] = hit["id"]
                 continue
             for name in names:
+                if name.lower() in reserved:
+                    log.info("state %r is reserved by Plane, trying next name", name)
+                    continue
                 try:
                     created = await self._req(
                         "POST", f"/projects/{project_id}/states/", json={"name": name, "group": group, "color": STATE_COLORS[key]}
