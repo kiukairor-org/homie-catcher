@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Mapping
@@ -137,6 +138,22 @@ def simulated_issue(now: float | None = None) -> dict:
     }
 
 
+def _post_with_retry(post: Callable, url: str, body: Any, headers: dict[str, str], attempts: int = 6, delay: float = 5.0) -> Any:
+    """k3s's NetworkPolicy controller admits a new pod's IP a few seconds after it starts, so the first
+    connection from a fresh Job pod can be refused. Retry connection errors only (never HTTP errors)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return post(url, body, headers)
+        except urllib.error.HTTPError:
+            raise
+        except OSError as exc:  # URLError is an OSError
+            if attempt == attempts:
+                raise
+            log.warning("ingest not reachable yet (%s), retry %d/%d in %.0fs", exc, attempt, attempts - 1, delay)
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None, post: Callable = _post_json) -> int:
     env = os.environ if env is None else env
     ap = argparse.ArgumentParser(prog="python -m catcher.nr_triage")
@@ -172,7 +189,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None, po
     if not issues:
         log.info("no open issues")
         return 0
-    result = post(ingest_url, {"issues": issues}, {"X-Catcher-Ingest-Token": token})
+    result = _post_with_retry(post, ingest_url, {"issues": issues}, {"X-Catcher-Ingest-Token": token})
     log.info("sent %d issue(s): %s", len(issues), json.dumps(result)[:300])
     return 0
 

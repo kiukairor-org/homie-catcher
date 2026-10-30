@@ -197,3 +197,21 @@ def test_ingest_rejects_bad_payload_shape():
                 await bot.ingest_alerts(bad)
 
     asyncio.run(go())
+
+
+def test_ingest_post_retries_connection_refused(monkeypatch):
+    import urllib.error
+
+    from catcher import nr_triage
+
+    monkeypatch.setattr(nr_triage.time, "sleep", lambda s: None)
+    calls = []
+
+    def flaky(url, body, headers, timeout=30):
+        calls.append(url)
+        if len(calls) < 3:
+            raise urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+        return {"ok": True}
+
+    assert nr_triage._post_with_retry(flaky, "http://c/ingest", {}, {}) == {"ok": True}
+    assert len(calls) == 3
