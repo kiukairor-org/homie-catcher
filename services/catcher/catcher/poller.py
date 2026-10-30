@@ -38,7 +38,8 @@ def preview_version_url(repo: str, number: int) -> str:
 def pr_matches_issue(pr: dict, issue: int) -> bool:
     body = pr.get("body") or ""
     head = (pr.get("head") or {}).get("ref") or ""
-    return bool(re.search(rf"#{issue}(?!\d)", body)) or head.startswith(f"claude/issue-{issue}-")
+    # "#12" but not "other-repo#12" / "org/repo#12" (cross-repo references are a different issue)
+    return bool(re.search(rf"(?<![\w./-])#{issue}(?!\d)", body)) or head.startswith(f"claude/issue-{issue}-")
 
 
 class Poller:

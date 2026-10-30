@@ -25,6 +25,10 @@ def test_pr_matching():
     assert not pr_matches_issue({"body": "Closes #123", "head": {"ref": "x"}}, 12)
     assert pr_matches_issue({"body": "", "head": {"ref": "claude/issue-12-20261030"}}, 12)
     assert not pr_matches_issue({"body": None, "head": {"ref": "claude/issue-120-x"}}, 12)
+    # cross-repo references are not this repo's issue (agentic-demo#14 mentioned app-template#10)
+    assert not pr_matches_issue({"body": "Closes #13. Verified on app-template#10.", "head": {"ref": "fix/x"}}, 10)
+    assert not pr_matches_issue({"body": "see kiukairor-org/app-template#10", "head": {"ref": "fix/x"}}, 10)
+    assert pr_matches_issue({"body": "Fixes (#10) and more", "head": {"ref": "fix/x"}}, 10)
 
 
 def test_poller_announces_each_milestone_once():
