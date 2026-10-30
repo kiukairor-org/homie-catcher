@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -35,13 +36,20 @@ from .routing import (
     valid_repo_name,
 )
 from .spec import Spec, SpecError, validate_spec
-from .text import defang, issue_body, spec_html, spec_markdown
+from .text import clip, defang, issue_body, md_escape, spec_html, spec_markdown
 
 log = logging.getLogger(__name__)
 
 REPO_CACHE_S = 300
 MAX_REPO_BUTTONS = 24
 NOT_ALLOWED = {"ephemeral_text": "not allowed"}
+MAX_ALERTS_PER_REQUEST = 50
+_NR_ISSUE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+NR_CRITERIA = (
+    "The root cause of the New Relic issue is identified and fixed",
+    "The alert condition no longer fires for the same cause",
+    "A regression test covers the failure where feasible",
+)
 
 
 class Catcher:
@@ -488,6 +496,80 @@ class Catcher:
             self.db.transition(item_id, ["creating_repo"], "repo_failed")
             await self.say(root, f"⚠️ Repo creation failed at step `{step}`. Tap Approve repo again to retry, or Reject.")
 
+    # ------------------------------------------------------- New Relic alerts
+    async def ingest_alerts(self, payload: Any) -> dict:
+        """Alerts from catcher.nr_triage. All alert text is untrusted: it is only escaped, clipped and
+        displayed - never sent to Claude, never interpreted. Each new issue becomes a Triage item plus a
+        root post in #ideas with the usual owner-gated Approve/Reject. Nothing is ever auto-approved."""
+        issues = payload.get("issues") if isinstance(payload, dict) else None
+        if not isinstance(issues, list) or len(issues) > MAX_ALERTS_PER_REQUEST:
+            raise ValueError("expected {'issues': [...]} with at most 50 entries")
+        created = duplicates = invalid = 0
+        for raw in issues:
+            alert = normalize_alert(raw)
+            if alert is None:
+                invalid += 1
+                continue
+            if not self.db.claim_nr_issue(alert["issue_id"]):
+                duplicates += 1
+                continue
+            try:
+                await self._triage_alert(alert)
+                created += 1
+            except Exception:
+                log.exception("alert %s: triage failed", alert["issue_id"])
+                self.db.release_nr_issue(alert["issue_id"])
+        return {"created": created, "duplicates": duplicates, "invalid": invalid}
+
+    async def _triage_alert(self, alert: dict) -> None:
+        repo = self.cfg.nr_target_repo
+        names = ", ".join(alert["entity_names"]) or "n/a"
+        summary_plain = (
+            f"New Relic issue {alert['issue_id']} ({alert['priority']}): {alert['title']}. "
+            f"Entities: {names}. Activated: {alert['activated_at'] or 'n/a'}."
+        )
+        spec = validate_spec(
+            {
+                "action": "create",
+                "title": clip("[NR] " + alert["title"], 200),
+                "user_story": clip(f"As the owner of {repo}, I want this production alert investigated and fixed: {summary_plain}", 4000),
+                "acceptance_criteria": list(NR_CRITERIA),
+                "labels": ["bug"],
+            }
+        )
+        header = (
+            f"🚨 **New Relic issue** ({md_escape(alert['priority'])}) for `{repo}`\n"
+            f"**{md_escape(alert['title'])}**\n"
+            f"Entities: {md_escape(names)} · Activated: {md_escape(alert['activated_at'] or 'n/a')} · "
+            f"Issue id: `{alert['issue_id']}`"
+        )
+        if alert["url"]:
+            header += f"\nNew Relic: {alert['url']}"
+        root_post = await self.mm.post(self.ideas_channel_id, header + "\n\n_Creating the triage item…_")
+        root = root_post["id"]
+        self.db.upsert_thread(root, self.ideas_channel_id)
+        self.db.set_thread_repo(root, repo, False)
+        item_id = self.db.create_item(root, summary_plain, "running")
+        self.db.link_nr_issue(alert["issue_id"], item_id)
+        self.db.update_item(item_id, repo=repo, spec_json=json.dumps(spec.raw))
+        proj = await self.plane_project(repo)
+        wi = await self.plane.create_work_item(
+            proj, title=spec.title, description_html=spec_html(spec, summary_plain, "New Relic issue (untrusted text)"), labels=["bug"]
+        )
+        self.db.update_item(item_id, plane_project_id=proj.project_id, plane_item_id=wi["id"], plane_seq=wi.get("sequence_id"))
+        self.db.transition(item_id, ["running"], "triage")
+        url = self.plane.item_url(proj.project_id, wi["id"])
+        secret, base = self.cfg.action_secret, self.cfg.action_base_url
+        actions = [
+            buttons.button(base, secret, "Approve", "approve", {"item": item_id}, "good"),
+            buttons.button(base, secret, "Reject", "reject", {"item": item_id}, "danger"),
+        ]
+        await self.mm.patch_post(
+            root,
+            f"{header}\nPlane ({proj.identifier}-{wi.get('sequence_id')}, Triage): {url}",
+            attachments=[{"text": "Approve to hand this to the agent (GitHub issue in " + repo + ").", "actions": actions}],
+        )
+
     # ----------------------------------------------------------- milestones
     async def announce(self, item_id: int, text: str) -> None:
         item = self.db.item(item_id)
@@ -495,3 +577,34 @@ class Catcher:
         if self.agent_log_channel_id:
             tag = f"[{item['repo']}#{item['gh_issue_number']}]" if item["gh_issue_number"] else f"[{item['repo']}]"
             await self.mm.post(self.agent_log_channel_id, f"{tag} {text}")
+
+
+def _clean_list(v: Any, n: int = 10, width: int = 100) -> list[str]:
+    return [clip(" ".join(str(x).split()), width) for x in v[:n]] if isinstance(v, list) else []
+
+
+def normalize_alert(raw: Any) -> dict | None:
+    """Shape-check and clip one alert; None if unusable. Values stay untrusted (escape on display)."""
+    if not isinstance(raw, dict):
+        return None
+    issue_id = str(raw.get("issue_id") or "")
+    if not _NR_ISSUE_ID.match(issue_id):
+        return None
+    url = str(raw.get("url") or "")
+    if not re.match(r"^https://one(\.eu)?\.newrelic\.com/[^\s<>()\[\]`]*$", url):
+        url = ""
+    priority = str(raw.get("priority") or "UNKNOWN").upper()
+    if priority not in ("LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"):
+        priority = "UNKNOWN"
+    activated = str(raw.get("activated_at") or "")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$", activated):
+        activated = ""
+    return {
+        "issue_id": issue_id,
+        "title": clip(" ".join(str(raw.get("title") or "New Relic issue").split()), 180) or "New Relic issue",
+        "priority": priority,
+        "entity_names": _clean_list(raw.get("entity_names")),
+        "entity_guids": _clean_list(raw.get("entity_guids"), width=200),
+        "activated_at": activated,
+        "url": url,
+    }

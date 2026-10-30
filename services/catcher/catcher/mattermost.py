@@ -45,6 +45,12 @@ class Mattermost:
             body["props"] = {"attachments": attachments}
         return await self._req("POST", "/posts", body)
 
+    async def patch_post(self, post_id: str, message: str, attachments: list | None = None) -> dict:
+        body: dict[str, Any] = {"message": message}
+        if attachments is not None:
+            body["props"] = {"attachments": attachments}
+        return await self._req("PUT", f"/posts/{post_id}/patch", body)
+
     async def ephemeral(self, user_id: str, channel_id: str, message: str, root_id: str | None = None) -> None:
         post: dict[str, Any] = {"channel_id": channel_id, "message": message}
         if root_id:

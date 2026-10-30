@@ -1,0 +1,45 @@
+{
+  "data": {
+    "actor": {
+      "account": {
+        "aiIssues": {
+          "issues": {
+            "issues": [
+              {
+                "issueId": "bda33b52-c70b-47b9-abe3-9e859a394037",
+                "title": ["Error percentage > 5.0 for at least 5 minutes on 'agentic-demo'", "second incident"],
+                "priority": "CRITICAL",
+                "state": "ACTIVATED",
+                "entityNames": ["agentic-demo"],
+                "entityGuids": ["MXxBUE18QVBQTElDQVRJT058MzIxNjY2NA"],
+                "activatedAt": 1793361600000,
+                "createdAt": 1793361300000
+              },
+              {
+                "issueId": "242c713c-7654-491c-808e-3aa7fc44812b",
+                "title": ["Anomaly: Non-web throughput"],
+                "priority": "MEDIUM",
+                "state": "CREATED",
+                "entityNames": null,
+                "entityGuids": null,
+                "activatedAt": null,
+                "createdAt": 1793361000000
+              },
+              {
+                "issueId": "f19c9803-fb24-4d5d-9c35-16f659bceb3a",
+                "title": ["Anomaly: Error rate"],
+                "priority": "MEDIUM",
+                "state": "CLOSED",
+                "entityNames": [],
+                "entityGuids": [],
+                "activatedAt": 1793360000000,
+                "createdAt": 1793360000000
+              }
+            ],
+            "nextCursor": null
+          }
+        }
+      }
+    }
+  }
+}

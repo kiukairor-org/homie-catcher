@@ -77,6 +77,8 @@ Every button is an atomic status transition, so a second click (or a replay) doe
 | `OWNER_MENTION` | no (`@kiukairor`) | Who to ping on `needs-human` |
 | `CLAUDE_BIN` / `PLANE_MCP_BIN` | no | Set by the image |
 | `LOG_LEVEL` | no (`INFO`) | Python log level |
+| `CATCHER_INGEST_TOKEN` | no, secret | ≥ 32 chars; enables `POST /ingest/alert` (header `X-Catcher-Ingest-Token`). Unset → endpoint returns 404 |
+| `NR_TARGET_REPO` | no (`agentic-demo`) | Repo (and Plane project) that New Relic alerts are triaged into |
 
 Mattermost must allow the callback host: System Console → Developer → *Allow untrusted internal
 connections to* `catcher.catcher.svc.cluster.local`.
@@ -103,7 +105,8 @@ pytest && ruff check . && ruff format --check .
 python -m catcher
 ```
 
-Endpoints on `:8080`: `GET /healthz`, `POST /actions/<choose_repo|approve|reject|approve_repo|reject_repo>`.
+Endpoints on `:8080`: `GET /healthz`, `POST /actions/<choose_repo|approve|reject|approve_repo|reject_repo>`,
+`POST /ingest/alert` (only with `CATCHER_INGEST_TOKEN`).
 
 ## Image
 
@@ -120,6 +123,48 @@ Endpoints on `:8080`: `GET /healthz`, `POST /actions/<choose_repo|approve|reject
 
 CI (`.github/workflows/ci.yml`): ruff + pytest on `ubuntu-24.04-arm`; on `main` pushes
 `ghcr.io/kiukairor-org/homie-catcher:<short-sha>` and `:main`.
+
+## Phase 5: New Relic → triage
+
+`catcher/nr_triage.py` runs as a Kubernetes **CronJob every 5 minutes** (same image, outbound only):
+
+```yaml
+schedule: "*/5 * * * *"
+concurrencyPolicy: Forbid
+command: ["python", "-m", "catcher.nr_triage"]      # add "--simulate" for the demo
+```
+
+It queries NerdGraph for open issues and POSTs them to the catcher:
+
+```graphql
+{ actor { account(id: <NEW_RELIC_ACCOUNT_ID>) { aiIssues {
+    issues(filter: {states: [ACTIVATED, CREATED], entityGuids: [<NR_ENTITY_GUIDS>]}, cursor: "<next>") {
+      issues { issueId title priority state entityNames entityGuids activatedAt createdAt }
+      nextCursor } } } } }
+```
+
+(schema: [NerdGraph tutorial: Issue and alert event query APIs](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-issues-api-via-github/);
+no `timeWindow` = last 24 h; up to 5 pages). Each issue is sent as
+`{issue_id, title, priority, entity_names, entity_guids, activated_at, url}`.
+`--simulate` sends one fake issue (`issue_id: simulated-<uuid>`) without calling New Relic.
+
+| CronJob variable | Required | Meaning |
+|---|---|---|
+| `NEW_RELIC_API_KEY` | yes (not with `--simulate`), secret | New Relic **User** key (`NRAK-…`), sent as `API-Key` |
+| `NEW_RELIC_ACCOUNT_ID` | yes (not with `--simulate`) | Account id (integer) |
+| `NEW_RELIC_REGION` | no (`US`) | `US` → `api.newrelic.com/graphql`, `EU` → `api.eu.newrelic.com/graphql` |
+| `NR_ENTITY_GUIDS` | no | Comma-separated entity GUIDs to scope to the target app |
+| `CATCHER_INGEST_URL` | no | Default `http://catcher.catcher.svc.cluster.local:8080/ingest/alert` |
+| `CATCHER_INGEST_TOKEN` | yes, secret | Same value as the catcher's |
+
+On the catcher, each **new** issue id (deduplicated in table `nr_issues`) becomes a Plane work item in
+the triage state ("Needs triage") of the `NR_TARGET_REPO` project, label `bug`, title `[NR] …`, and a
+**root post in `#ideas`** with the summary, the Plane link and the usual owner-only, HMAC-signed
+**Approve / Reject** buttons; the thread remembers `NR_TARGET_REPO`. Approve runs the normal flow
+(Ready for agent + GitHub issue labelled `agent`). **Nothing is ever auto-approved**, and no Claude run
+is spent on alerts. Alert text is untrusted: it is never sent to Claude, and it is clipped, flattened
+to one line and Markdown/mention-escaped before posting; only `https://one(.eu).newrelic.com/…` links
+are relayed.
 
 ## Milestones (poller, every 60 s)
 

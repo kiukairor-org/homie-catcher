@@ -119,6 +119,11 @@ class FakeServices:
             post = {"id": f"post{next(self._seq)}", **body}
             self.posts.append(post)
             return Response(201, post)
+        m = re.match(r"^/api/v4/posts/([^/]+)/patch$", path)
+        if m and method == "PUT":
+            post = next(p for p in self.posts if p["id"] == m.group(1))
+            post.update(body)
+            return Response(200, post)
         if path in ("/api/v4/reactions", "/api/v4/posts/ephemeral"):
             return Response(201, {})
         return Response(404, {"message": "not found"})

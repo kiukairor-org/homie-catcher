@@ -8,6 +8,7 @@ plane_projects repo -> Plane project + state/label ids
 pull_requests  PRs found for tracked issues
 milestones     milestone keys already announced (each one exactly once)
 seen_posts     websocket de-duplication
+nr_issues      New Relic issue ids already turned into triage items
 """
 
 from __future__ import annotations
@@ -85,6 +86,11 @@ CREATE TABLE IF NOT EXISTS milestones(
   announced_at REAL NOT NULL,
   PRIMARY KEY(item_id, key)
 );
+CREATE TABLE IF NOT EXISTS nr_issues(
+  issue_id TEXT PRIMARY KEY,
+  item_id INTEGER,
+  received_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS seen_posts(
   post_id TEXT PRIMARY KEY,
   seen_at REAL NOT NULL
@@ -126,6 +132,19 @@ class DB:
         """True the first time a post id is seen."""
         cur = self._x("INSERT OR IGNORE INTO seen_posts(post_id, seen_at) VALUES(?,?)", (post_id, self.clock()))
         return cur.rowcount == 1
+
+    # ---- New Relic alerts ----------------------------------------------------
+    def claim_nr_issue(self, issue_id: str) -> bool:
+        """True the first time a New Relic issue id is seen."""
+        cur = self._x("INSERT OR IGNORE INTO nr_issues(issue_id, received_at) VALUES(?,?)", (issue_id, self.clock()))
+        return cur.rowcount == 1
+
+    def release_nr_issue(self, issue_id: str) -> None:
+        """Forget an issue whose processing failed before anything was created, so a later run retries it."""
+        self._x("DELETE FROM nr_issues WHERE issue_id=? AND item_id IS NULL", (issue_id,))
+
+    def link_nr_issue(self, issue_id: str, item_id: int) -> None:
+        self._x("UPDATE nr_issues SET item_id=? WHERE issue_id=?", (item_id, issue_id))
 
     # ---- threads -----------------------------------------------------------
     def upsert_thread(self, root: str, channel_id: str) -> None:

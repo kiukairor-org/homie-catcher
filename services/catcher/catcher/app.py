@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -43,7 +44,22 @@ def make_app(catcher: Catcher) -> web.Application:
             result = {"ephemeral_text": "Something went wrong; see the catcher logs."}
         return web.json_response(result)
 
+    async def ingest(request: web.Request) -> web.Response:
+        expected = catcher.cfg.ingest_token
+        if not expected:
+            return web.json_response({"error": "ingest disabled"}, status=404)
+        given = request.headers.get("X-Catcher-Ingest-Token", "")
+        if not hmac.compare_digest(given.encode(), expected.encode()):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        try:
+            payload = await request.json()
+            result = await catcher.ingest_alerts(payload)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return web.json_response({"error": str(exc)[:200]}, status=400)
+        return web.json_response(result)
+
     app.router.add_get("/healthz", healthz)
+    app.router.add_post("/ingest/alert", ingest)
     app.router.add_post("/actions/{name}", action)
     return app
 

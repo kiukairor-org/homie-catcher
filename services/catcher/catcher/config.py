@@ -40,6 +40,8 @@ class Config:
     claude_model: str | None = None
     owner_mention: str = "@kiukairor"
     poll_interval_s: int = 60
+    ingest_token: str | None = field(default=None, repr=False)  # CATCHER_INGEST_TOKEN; unset -> /ingest disabled
+    nr_target_repo: str = "agentic-demo"
     listen_port: int = 8080
 
     @classmethod
@@ -88,6 +90,8 @@ class Config:
             plane_mcp_bin=env.get("PLANE_MCP_BIN", "plane-mcp-server"),
             claude_model=env.get("CLAUDE_MODEL") or None,
             owner_mention=env.get("OWNER_MENTION", "@kiukairor"),
+            ingest_token=_ingest_token(env.get("CATCHER_INGEST_TOKEN", "")),
+            nr_target_repo=env.get("NR_TARGET_REPO", "agentic-demo").strip() or "agentic-demo",
         )
 
     def secret_values(self) -> list[str]:
@@ -97,4 +101,14 @@ class Config:
             self.action_secret.decode(),
             self.plane_api_key,
             self.claude_oauth_token,
+            self.ingest_token or "",
         ]
+
+
+def _ingest_token(value: str) -> str | None:
+    value = value.strip()
+    if not value:
+        return None
+    if len(value) < 32:
+        raise ConfigError("CATCHER_INGEST_TOKEN must be at least 32 characters")
+    return value
