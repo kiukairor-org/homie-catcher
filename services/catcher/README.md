@@ -79,6 +79,7 @@ Every button is an atomic status transition, so a second click (or a replay) doe
 | `LOG_LEVEL` | no (`INFO`) | Python log level |
 | `CATCHER_INGEST_TOKEN` | no, secret | ≥ 32 chars; enables `POST /ingest/alert` (header `X-Catcher-Ingest-Token`). Unset → endpoint returns 404 |
 | `NR_TARGET_REPO` | no (`agentic-demo`) | Repo (and Plane project) that New Relic alerts are triaged into |
+| `APP_DOMAIN` | no (`tail8e3e5b.ts.net`) | Tailnet suffix for app (`<repo>.`) and preview (`pr-<n>-<repo>.`) URLs. Deployed/preview milestones are detected by `GET http://app.app-<repo>.svc.cluster.local/version` (prod, must equal the merge commit) and `http://app.pr-<repo>-<n>.svc.cluster.local/version` (preview, must equal the PR head); apps must keep the app-template `/version` contract |
 
 Mattermost must allow the callback host: System Console → Developer → *Allow untrusted internal
 connections to* `catcher.catcher.svc.cluster.local`.

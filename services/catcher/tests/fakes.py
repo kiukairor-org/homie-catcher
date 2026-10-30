@@ -69,6 +69,8 @@ class Call:
             return "plane"
         if self.url.startswith("http://mm.local"):
             return "mm"
+        if ".svc.cluster.local/" in self.url:
+            return "app"
         return "other"
 
     @property
@@ -92,6 +94,7 @@ class FakeServices:
         self.gh_labels: dict[str, set[str]] = {}
         self.issues: list[dict] = []
         self.pulls: dict[str, list[dict]] = {}
+        self.app_versions: dict[str, str] = {}  # in-cluster /version URL -> version
         self.reviews: dict[int, list[dict]] = {}
         self.comments: dict[int, list[dict]] = {}
         self.check_runs: dict[str, list[dict]] = {}
@@ -105,6 +108,9 @@ class FakeServices:
         call = Call(method, url, json, params, dict(headers or {}))
         self.calls.append(call)
         svc, path = call.service, call.path
+        if svc == "app":  # in-cluster app GET /version probes
+            v = self.app_versions.get(url)
+            return Response(200, {"app": "x", "version": v}) if v else Response(503, None)
         handler = getattr(self, f"_{svc}")
         return handler(method, path, json, params)
 

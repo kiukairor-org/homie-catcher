@@ -1,4 +1,4 @@
-"""Outbound GitHub poller: PR/CI/review/preview/merge milestones for tracked issues.
+"""Outbound poller: PR/CI/review/preview/merge/deploy milestones for tracked issues.
 
 GitHub-hosted runners can't reach the in-cluster Mattermost, so the bot polls (every 60 s,
 backing off when ``X-RateLimit-Remaining`` gets low) and announces each milestone once.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from .github import REVIEWER_LOGIN
@@ -19,6 +20,19 @@ log = logging.getLogger(__name__)
 # anyone can comment, and we must not relay a stranger's link as our preview).
 PREVIEW_COMMENT_AUTHORS = frozenset({"kiu-homie-bot[bot]", "github-actions[bot]"})
 _PREVIEW = re.compile(r"Preview:\s*(https://[A-Za-z0-9.-]+(?::\d+)?(?:/[^\s<>()\[\]`]*)?)")
+
+
+DEPLOY_TIMEOUT_S = 30 * 60
+
+
+def prod_version_url(repo: str) -> str:
+    """In-cluster URL of the prod app (ApplicationSet `apps`: namespace app-<repo>, Service `app`)."""
+    return f"http://app.app-{repo}.svc.cluster.local/version"
+
+
+def preview_version_url(repo: str, number: int) -> str:
+    """In-cluster URL of a PR preview (ApplicationSet `previews`: namespace pr-<repo>-<n>)."""
+    return f"http://app.pr-{repo}-{number}.svc.cluster.local/version"
 
 
 def pr_matches_issue(pr: dict, issue: int) -> bool:
@@ -101,17 +115,51 @@ class Poller:
             if m and self.db.claim_milestone(iid, f"pr{n}:preview:{m.group(1)}"):
                 await self.c.announce(iid, f"👀 Preview ready for PR #{n}: {m.group(1)}")
 
-        if pr.get("merged_at") and self.db.claim_milestone(iid, f"pr{n}:merged"):
-            await self.c.announce(iid, f"🎉 PR #{n} merged")
-            await self._plane(item, "done")
+        if pr.get("state") == "open" and sha and "preview" in labels:
+            # The preview is live when the PR's preview namespace serves the PR head commit.
+            if await self.running_version(preview_version_url(repo, n)) == sha and self.db.claim_milestone(
+                iid, f"pr{n}:preview-live:{sha}"
+            ):
+                await self.c.announce(iid, f"👀 Preview ready for PR #{n} ({sha[:7]}): https://pr-{n}-{repo}.{self.c.cfg.app_domain}")
+
+        if pr.get("merged_at"):
+            if self.db.claim_milestone(iid, f"pr{n}:merged"):
+                await self.c.announce(iid, f"🎉 PR #{n} merged")
+                await self._plane(item, "done")
             await self.on_merged(item, pr)
-            self.db.transition(iid, ["approved"], "done")
+
+    async def running_version(self, url: str) -> str | None:
+        """`version` reported by an app's GET /version (app-template contract), or None."""
+        try:
+            resp = await self.gh.transport.send("GET", url, timeout=5)
+        except Exception:  # noqa: BLE001 - any probe failure means "not serving it yet"
+            return None
+        if resp.ok and isinstance(resp.body, dict) and isinstance(resp.body.get("version"), str):
+            return resp.body["version"]
+        return None
 
     async def on_merged(self, item, pr: dict) -> None:
-        """Deployed milestone hook.
+        """Deployed milestone: prod serves the merge commit (Argo CD pins prod to main's SHA).
 
-        TODO(Phase 4): Argo CD deploys prod after merge. Add the "deployed" milestone here
-        (e.g. poll the app's Argo CD Application sync/health or a deploy commit status) and
-        announce it once with key f"pr{n}:deployed".
+        Keeps the item tracked until then, or until DEPLOY_TIMEOUT_S after the merge.
         """
-        return None
+        iid, repo, n = item["id"], item["repo"], pr["number"]
+        merge_sha = pr.get("merge_commit_sha") or ""
+        running = await self.running_version(prod_version_url(repo))
+        if merge_sha and running == merge_sha:
+            if self.db.claim_milestone(iid, f"pr{n}:deployed"):
+                await self.c.announce(iid, f"🚀 PR #{n} deployed to prod ({merge_sha[:7]}): https://{repo}.{self.c.cfg.app_domain}")
+            self.db.transition(iid, ["approved"], "done")
+            return
+        try:
+            merged_at = datetime.fromisoformat(str(pr["merged_at"]).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            merged_at = 0.0
+        if self.db.clock() - merged_at > DEPLOY_TIMEOUT_S:
+            if self.db.claim_milestone(iid, f"pr{n}:deploy-timeout"):
+                await self.c.announce(
+                    iid,
+                    f"⚠️ {self.c.cfg.owner_mention} PR #{n} merged but prod is not serving {merge_sha[:7] or '?'} "
+                    f"after {DEPLOY_TIMEOUT_S // 60} min (running: {running or 'nothing'}). Check Argo CD app `app-{repo}`.",
+                )
+            self.db.transition(iid, ["approved"], "done")

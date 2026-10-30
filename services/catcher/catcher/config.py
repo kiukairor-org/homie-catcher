@@ -42,6 +42,7 @@ class Config:
     poll_interval_s: int = 60
     ingest_token: str | None = field(default=None, repr=False)  # CATCHER_INGEST_TOKEN; unset -> /ingest disabled
     nr_target_repo: str = "agentic-demo"
+    app_domain: str = "tail8e3e5b.ts.net"  # APP_DOMAIN: tailnet suffix of app/preview Ingress hosts
     listen_port: int = 8080
 
     @classmethod
@@ -92,6 +93,7 @@ class Config:
             owner_mention=env.get("OWNER_MENTION", "@kiukairor"),
             ingest_token=_ingest_token(env.get("CATCHER_INGEST_TOKEN", "")),
             nr_target_repo=env.get("NR_TARGET_REPO", "agentic-demo").strip() or "agentic-demo",
+            app_domain=env.get("APP_DOMAIN", "tail8e3e5b.ts.net").strip() or "tail8e3e5b.ts.net",
         )
 
     def secret_values(self) -> list[str]:
