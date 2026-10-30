@@ -192,6 +192,13 @@ class DB:
         )
         return cur.rowcount == 1
 
+    def move_item(self, item_id: int, new_root: str) -> None:
+        """Re-point an item to another thread (its progress continues there)."""
+        self._x("UPDATE items SET root_post_id=?, updated_at=? WHERE id=?", (new_root, self.clock(), item_id))
+
+    def forget_plane_project(self, repo: str) -> None:
+        self._x("DELETE FROM plane_projects WHERE repo=?", (repo,))
+
     def tracked_items(self) -> list[sqlite3.Row]:
         return self._x("SELECT * FROM items WHERE status='approved' AND gh_issue_number IS NOT NULL AND repo IS NOT NULL").fetchall()
 

@@ -24,7 +24,7 @@ FORBIDDEN_FRAGMENTS = (
     "/environments",
     "/secrets",
     "/vulnerability-alerts",
-    "/topics",
+    # "/topics" is allowed since D53 (retire marker), guarded by RETIRE_PROTECTED in check_allowed
     "/pages",
     "/autolinks",
     "/interaction-limits",
@@ -37,6 +37,8 @@ EXPECTED_ADMIN = {
     ("POST", "/orgs/{org}/repos"),
     ("PATCH", "/repos/{owner}/{repo}"),
     ("PUT", "/repos/{owner}/{repo}/branches/main/protection"),
+    ("PUT", "/repos/{owner}/{repo}/topics"),  # retire/restore marker (D53)
+    ("DELETE", "/repos/{owner}/{repo}"),  # permanent delete of an already-retired repo (D55)
 }
 
 
@@ -56,24 +58,27 @@ def test_package_references_no_other_admin_endpoints():
                 continue
             for frag in FORBIDDEN_FRAGMENTS:
                 assert frag not in s, f"{path.name} references {frag!r}: {s!r}"
-            assert not ("DELETE" in s and "/repos" in s), f"{path.name}: {s!r}"
+            assert not ("DELETE" in s and "/repos" in s and path.name not in ("github.py", "admin.py")), f"{path.name}: {s!r}"
 
 
-def test_no_delete_method_anywhere_in_github_calls():
+def test_delete_only_in_delete_repo():
+    """The only GitHub DELETE is GitHub.delete_repo (permanent delete of a retired repo, D55)."""
     for path in PKG.rglob("*.py"):
         tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "request" and node.args:
-                first = node.args[0]
-                if isinstance(first, ast.Constant):
-                    assert first.value in ("GET", "POST", "PATCH", "PUT"), f"{path.name}: {first.value}"
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "request" and node.args:
+                    first = node.args[0]
+                    if isinstance(first, ast.Constant) and first.value == "DELETE":
+                        assert (path.name, fn.name) == ("github.py", "delete_repo"), f"{path.name}:{fn.name}"
 
 
-def test_admin_endpoints_are_exactly_the_four():
+def test_admin_endpoints_are_exactly_these():
     admin = {(e.method, e.template) for e in ghmod.ENDPOINTS if e.admin}
     assert admin == EXPECTED_ADMIN
-    for e in ghmod.ENDPOINTS:
-        assert e.method != "DELETE"
+    assert {(e.method, e.template) for e in ghmod.ENDPOINTS if e.method == "DELETE"} == {("DELETE", "/repos/{owner}/{repo}")}
 
 
 def test_patch_and_protection_only_called_from_new_repo_path():
@@ -84,9 +89,27 @@ def test_patch_and_protection_only_called_from_new_repo_path():
             for node in ast.walk(fn):
                 if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "request" and node.args:
                     a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and a0.value in ("PATCH", "PUT"):
+                    if isinstance(a0, ast.Constant) and a0.value in ("PATCH", "PUT", "DELETE"):
                         callers.setdefault(fn.name, set()).add(a0.value)
-    assert callers == {"configure_new_repo": {"PATCH", "PUT"}}
+    assert callers == {
+        "configure_new_repo": {"PATCH", "PUT"},
+        "set_topics": {"PUT"},
+        "set_archived": {"PATCH"},
+        "delete_repo": {"DELETE"},
+        "set_issue_body": {"PATCH"},
+    }
+    # retire/restore/delete helpers are only used by the owner-confirmed admin flow
+    tree_a = ast.parse((PKG / "admin.py").read_text())
+    users_a = set()
+    for fn in ast.walk(tree_a):
+        if isinstance(fn, ast.AsyncFunctionDef):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Attribute) and node.attr in ("set_topics", "set_archived", "delete_repo"):
+                    users_a.add(fn.name)
+    assert users_a == {"_run"}
+    for mod in ("bot.py", "brainstorm.py", "channels.py", "poller.py", "app.py"):
+        src = (PKG / mod).read_text()
+        assert "delete_repo" not in src and "set_archived" not in src and "set_topics" not in src, mod
     # and configure_new_repo / generate are only used from the bot's repo-creation flow
     bot_src = (PKG / "bot.py").read_text()
     tree = ast.parse(bot_src)
@@ -106,7 +129,15 @@ def _gh():
 @pytest.mark.parametrize(
     "method,path,body",
     [
-        ("DELETE", f"/repos/{ORG}/agentic-demo", None),
+        ("DELETE", f"/repos/{ORG}/app-template", None),
+        ("DELETE", f"/repos/{ORG}/homie-catcher", None),
+        ("PATCH", f"/repos/{ORG}/homelab-gitops", {"archived": True}),
+        ("PATCH", f"/repos/{ORG}/mattermost-arm64", {"archived": True}),
+        ("PATCH", f"/repos/{ORG}/agentic-demo", {"archived": "yes"}),
+        ("PATCH", f"/repos/{ORG}/agentic-demo", {"archived": True, "private": True}),
+        ("PUT", f"/repos/{ORG}/app-template/topics", {"names": ["retired"]}),
+        ("PATCH", f"/repos/{ORG}/agentic-demo/issues/1", {"body": "x"}),
+        ("PATCH", f"/repos/{ORG}/homie-catcher/issues/1", {"body": "x", "state": "closed"}),
         ("PUT", f"/repos/{ORG}/agentic-demo/collaborators/evil", {}),
         ("POST", f"/repos/{ORG}/agentic-demo/hooks", {}),
         ("POST", f"/repos/{ORG}/agentic-demo/keys", {}),

@@ -49,6 +49,7 @@ def make_config(**over) -> Config:
         "GITHUB_APP_PRIVATE_KEY_PATH": "/dev/null",
         "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-faketokenvalue",
         "DB_PATH": ":memory:",
+        "APP_CHANNELS": "false",  # existing tests cover the #ideas-only flow; B tests switch it on
     }
     env.update(over)
     return Config.from_env(env)
@@ -97,6 +98,14 @@ class FakeServices:
         self.pulls: dict[str, list[dict]] = {}
         self.app_versions: dict[str, str] = {}  # in-cluster /version URL -> version
         self.files: dict[str, dict] = {}  # Mattermost file id -> {"info": {...}, "data": bytes}
+        self.channels: dict[str, dict] = {}  # Mattermost channels created by the bot: name -> {id, name, delete_at}
+        self.channel_members: dict[str, set] = {}
+        self.archived: set[str] = set()  # archived GitHub repos
+        self.deleted: set[str] = set()
+        self.topics: dict[str, list[str]] = {}
+        self.repo_comments: dict[str, list[dict]] = {}  # repo -> repo-wide issue comments (usage markers)
+        self.issue_bodies: dict[tuple, str] = {}
+        self.posted_comments: list[dict] = []
         self.reviews: dict[int, list[dict]] = {}
         self.comments: dict[int, list[dict]] = {}
         self.check_runs: dict[str, list[dict]] = {}
@@ -125,10 +134,35 @@ class FakeServices:
     def _mm(self, method, path, body, params):
         if path == "/api/v4/users/me":
             return Response(200, {"id": BOT})
+        if path == "/api/v4/teams/name/homie":
+            return Response(200, {"id": "teamid"})
         m = re.match(r"^/api/v4/teams/name/[^/]+/channels/name/([^/]+)$", path)
         if m:
             cid = {"ideas": IDEAS, "agent-log": AGENT_LOG, "brainstorm": BRAINSTORM}.get(m.group(1))
-            return Response(200, {"id": cid}) if cid else Response(404, {"message": "not found"})
+            if cid:
+                return Response(200, {"id": cid, "delete_at": 0})
+            ch = self.channels.get(m.group(1))
+            if ch and (not ch["delete_at"] or (params or {}).get("include_deleted") == "true"):
+                return Response(200, dict(ch))
+            return Response(404, {"message": "not found"})
+        if path == "/api/v4/channels" and method == "POST":
+            ch = {"id": f"chan{next(self._seq):022d}", "name": body["name"], "delete_at": 0, "type": body["type"]}
+            self.channels[body["name"]] = ch
+            return Response(201, dict(ch))
+        m = re.match(r"^/api/v4/channels/([^/]+)(/members|/restore)?$", path)
+        if m:
+            ch = next((c for c in self.channels.values() if c["id"] == m.group(1)), None)
+            if ch is None:
+                return Response(404, {"message": "not found"})
+            if m.group(2) == "/members":
+                self.channel_members.setdefault(ch["name"], set()).add(body["user_id"])
+                return Response(201, {})
+            if m.group(2) == "/restore":
+                ch["delete_at"] = 0
+                return Response(200, dict(ch))
+            if method == "DELETE":
+                ch["delete_at"] = 123
+                return Response(200, {"status": "OK"})
         m = re.match(r"^/api/v4/files/([^/]+)/info$", path)
         if m and m.group(1) in self.files:
             return Response(200, self.files[m.group(1)]["info"])
@@ -148,6 +182,18 @@ class FakeServices:
     # ---- Plane -----------------------------------------------------------
     def _plane(self, method, path, body, params):
         p = path.replace("/api/v1/workspaces/homie", "")
+        m = re.match(r"^/projects/([0-9a-f-]{36})/(archive/)?$", p)
+        if m:
+            proj = next((x for x in self.plane_projects if x["id"] == m.group(1)), None)
+            if proj is None:
+                return Response(404, {})
+            if m.group(2):
+                proj["archived_at"] = "2026-10-30T00:00:00Z" if method == "POST" else None
+                return Response(204, None)
+            if method == "DELETE":
+                self.plane_projects.remove(proj)
+                return Response(204, None)
+            return Response(200, dict(proj))
         if p == "/projects/" and method == "GET":
             return Response(200, {"results": self.plane_projects})
         if p == "/projects/" and method == "POST":
@@ -201,11 +247,51 @@ class FakeServices:
             return Response(201, {"token": "ghs_" + "x" * 36, "expires_at": "2099-01-01T00:00:00Z"}, h)
         if path == "/installation/repositories":
             return Response(200, {"repositories": [{"name": r, "owner": {"login": ORG}} for r in sorted(self.repos)]}, h)
+        if path == "/installation/repositories":
+            pass
         m = re.match(rf"^/repos/{ORG}/([^/]+)$", path)
         if m and method == "GET":
-            return Response(200 if m.group(1) in self.repos else 404, {"name": m.group(1)}, h)
+            r = m.group(1)
+            return Response(200 if r in self.repos else 404, {"name": r, "archived": r in self.archived}, h)
         if m and method == "PATCH":
+            if isinstance(body, dict) and "archived" in body:
+                (self.archived.add if body["archived"] else self.archived.discard)(m.group(1))
             return Response(200, {}, h)
+        if m and method == "DELETE":
+            self.repos.discard(m.group(1))
+            self.deleted.add(m.group(1))
+            return Response(204, None, h)
+        m = re.match(rf"^/repos/{ORG}/([^/]+)/topics$", path)
+        if m:
+            if method == "PUT":
+                if m.group(1) in self.archived:
+                    return Response(403, {"message": "Repository was archived so is read-only."}, h)
+                self.topics[m.group(1)] = list(body["names"])
+            return Response(200, {"names": self.topics.get(m.group(1), [])}, h)
+        m = re.match(rf"^/repos/{ORG}/([^/]+)/contents(?:/([^/]+))?$", path)
+        if m:
+            if m.group(2) == "README.md":
+                import base64 as _b64
+
+                return Response(200, {"encoding": "base64", "content": _b64.b64encode(b"# dice\nRolls dice.").decode()}, h)
+            return Response(200, [{"name": "README.md"}, {"name": "main.go"}], h)
+        m = re.match(rf"^/repos/{ORG}/([^/]+)/issues/comments$", path)
+        if m:
+            return Response(200, self.repo_comments.get(m.group(1), []), h)
+        m = re.match(rf"^/repos/{ORG}/([^/]+)/issues/(\d+)$", path)
+        if m and method == "PATCH":
+            self.issue_bodies[(m.group(1), int(m.group(2)))] = body["body"]
+            return Response(200, {}, h)
+        m = re.match(rf"^/repos/{ORG}/([^/]+)/issues/(\d+)/comments$", path)
+        if m and method == "POST":
+            c = {"repo": m.group(1), "number": int(m.group(2)), **body}
+            self.posted_comments.append(c)
+            return Response(201, c, h)
+        m = re.match(rf"^/repos/{ORG}/([^/]+)/issues$", path)
+        if m and method == "GET":
+            lab = (params or {}).get("labels")
+            out = [i for i in self.issues if i["repo"] == m.group(1) and (not lab or lab in i.get("labels", []))]
+            return Response(200, out, h)
         m = re.match(rf"^/repos/{ORG}/app-template/generate$", path)
         if m:
             self.repos.add(body["name"])

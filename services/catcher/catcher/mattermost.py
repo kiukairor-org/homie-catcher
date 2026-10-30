@@ -37,6 +37,31 @@ class Mattermost:
         body = await self._req("GET", f"/teams/name/{team}/channels/name/{channel}")
         return body["id"]
 
+    async def team_id(self, team: str) -> str:
+        return (await self._req("GET", f"/teams/name/{team}"))["id"]
+
+    async def channel_by_name(self, team: str, name: str) -> dict | None:
+        """Channel incl. archived ones (``delete_at`` > 0), or None."""
+        try:
+            return await self._req("GET", f"/teams/name/{team}/channels/name/{name}", params={"include_deleted": "true"})
+        except HttpError as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+    async def create_private_channel(self, team_id: str, name: str, display: str, purpose: str) -> dict:
+        body = {"team_id": team_id, "name": name, "display_name": display, "purpose": purpose[:250], "type": "P"}
+        return await self._req("POST", "/channels", body)
+
+    async def add_member(self, channel_id: str, user_id: str) -> None:
+        await self._req("POST", f"/channels/{channel_id}/members", {"user_id": user_id})
+
+    async def archive_channel(self, channel_id: str) -> None:
+        await self._req("DELETE", f"/channels/{channel_id}")
+
+    async def restore_channel(self, channel_id: str) -> None:
+        await self._req("POST", f"/channels/{channel_id}/restore")
+
     async def post(self, channel_id: str, message: str, *, root_id: str | None = None, attachments: list | None = None) -> dict:
         body: dict[str, Any] = {"channel_id": channel_id, "message": message}
         if root_id:

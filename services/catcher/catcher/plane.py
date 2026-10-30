@@ -119,6 +119,25 @@ class Plane:
                     raise
         raise last  # type: ignore[misc]
 
+    async def project_archived(self, project_id: str) -> bool | None:
+        """True/False, or None if the project doesn't exist."""
+        try:
+            resp = await self._req("GET", f"/projects/{project_id}/")
+        except HttpError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return bool((resp.body or {}).get("archived_at"))
+
+    async def archive_project(self, project_id: str) -> None:
+        await self._req("POST", f"/projects/{project_id}/archive/")
+
+    async def unarchive_project(self, project_id: str) -> None:
+        await self._req("DELETE", f"/projects/{project_id}/archive/")
+
+    async def delete_project(self, project_id: str) -> None:
+        await self._req("DELETE", f"/projects/{project_id}/")
+
     async def ensure_project(self, repo: str, cached: Project | None = None) -> Project:
         if cached and set(STATES) <= set(cached.states) and set(LABELS) <= set(cached.labels):
             return cached

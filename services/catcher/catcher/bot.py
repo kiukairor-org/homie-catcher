@@ -19,6 +19,8 @@ from collections.abc import Callable
 from typing import Any
 
 from . import buttons
+from .admin import Admin, parse_command
+from .channels import AppChannels
 from .claude_runner import MAX_CLARIFY_ROUNDS, ClaudeError, RunContext, build_prompt
 from .config import Config
 from .db import DB
@@ -63,6 +65,9 @@ class Catcher:
         self._repos: tuple[float, list[str]] = (0.0, [])
         self._tasks: set[asyncio.Task] = set()
         self.brainstorm: Any = None  # catcher.brainstorm.Brainstorm, attached by the app (optional)
+        self.admin: Any = None
+        self.admin = Admin(self)
+        self.channels = AppChannels(self)
 
     # ------------------------------------------------------------------ setup
     async def startup(self) -> None:
@@ -90,6 +95,12 @@ class Catcher:
         """Wait for background tasks (used by tests)."""
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
+
+    def forget_repo_cache(self) -> None:
+        self._repos = (0.0, [])
+
+    def permalink(self, post_id: str) -> str:
+        return f"{self.cfg.mm_public_url}/{self.cfg.mm_team}/pl/{post_id}"
 
     async def org_repos(self) -> list[str]:
         ts, repos = self._repos
@@ -121,9 +132,14 @@ class Catcher:
         await self.handle_post(post)
 
     async def handle_post(self, post: dict) -> None:
-        if self.brainstorm is not None and self.brainstorm.channel_id and post.get("channel_id") == self.brainstorm.channel_id:
-            await self.brainstorm.handle_post(post)
-            return
+        if self.brainstorm is not None:
+            if self.brainstorm.channel_id and post.get("channel_id") == self.brainstorm.channel_id:
+                await self.brainstorm.handle_post(post)
+                return
+            repo = self.channels.repo_for_channel(post.get("channel_id"))
+            if repo:
+                await self.brainstorm.handle_post(post, repo=repo)
+                return
         if not self.accepts(post) or not self.db.mark_seen(post["id"]):
             return
         try:
@@ -132,9 +148,15 @@ class Catcher:
             log.warning("could not react: %s", exc)
         root = post.get("root_id") or post["id"]
         if post.get("root_id"):
+            if await self.admin.handle_reply(root, post["message"]):
+                return
             await self.handle_reply(root, post["message"])
         else:
             self.db.upsert_thread(root, post["channel_id"])
+            cmd = parse_command(post["message"])
+            if cmd:
+                await self.admin.handle_command(root, *cmd)
+                return
             await self.route_new_item(root, parse_message(post["message"]))
 
     async def say(self, root: str, message: str, attachments: list | None = None) -> None:
@@ -346,6 +368,14 @@ class Catcher:
 
     async def create_triage(self, item_id: int, spec: Spec, plane_key: str, from_status: str) -> None:
         item = self.db.item(item_id)
+        th0 = self.db.thread(item["root_post_id"])
+        if th0 and not th0["is_new_repo"] and th0["channel_id"] == self.ideas_channel_id:
+            # Work for an existing app lives in its channel ~<repo> (D58); #ideas keeps a pointer.
+            try:
+                await self.channels.move_item(item_id, plane_key, f"**{defang(spec.title)}**")
+            except Exception:
+                log.exception("item %s: could not move to ~%s; staying in #ideas", item_id, plane_key)
+            item = self.db.item(item_id)
         root = item["root_post_id"]
         proj = await self.plane_project(plane_key)
         wi = await self.plane.create_work_item(
@@ -373,6 +403,12 @@ class Catcher:
     async def handle_action(self, name: str, payload: Any) -> dict:
         if name.startswith("bs_"):
             return await self.brainstorm.handle_action(name, payload) if self.brainstorm is not None else NOT_ALLOWED
+        if name in ("adm_confirm", "adm_cancel"):
+            ctx = buttons.verify(self.cfg.action_secret, name, payload.get("context")) if isinstance(payload, dict) else None
+            if ctx is None or payload.get("user_id") not in self.cfg.owner_user_ids:
+                log.warning("refused admin button %s", name)
+                return NOT_ALLOWED
+            return await self.admin.handle_action(name, ctx)
         if name not in buttons.ACTION_NAMES or not isinstance(payload, dict):
             return NOT_ALLOWED
         ctx = buttons.verify(self.cfg.action_secret, name, payload.get("context"))
@@ -500,6 +536,12 @@ class Catcher:
             self.db.update_item(item_id, repo=name)
             step = "plane+issue"
             await self.say(root, f"📦 Repo created: https://github.com/{self.cfg.github_org}/{name}")
+            self.forget_repo_cache()
+            try:  # the new app's channel; progress continues there (D58)
+                if await self.channels.move_item(item_id, name, f"📦 New app **{name}**: building v1"):
+                    root = self.db.item(item_id)["root_post_id"]
+            except Exception:
+                log.exception("item %s: app channel for new repo %s failed", item_id, name)
             await self._ready_and_issue(item_id, new_app=name)
             self.db.transition(item_id, ["creating_repo"], "approved")
         except Exception as exc:

@@ -27,6 +27,10 @@ TEMPLATE_REPO = "app-template"
 REVIEWER_LOGIN = "kiu-homie-reviewer[bot]"
 TOKEN_REFRESH_MARGIN_S = 300
 FORBIDDEN_REPOS = frozenset({"release", "papl", "homelab-gitops"})
+# Never retired, restored, deleted or re-topicked by the catcher (DECISIONS D53).
+RETIRE_PROTECTED = frozenset({"homelab-gitops", "app-template", "homie-catcher", "mattermost-arm64", "release", "papl"})
+RETIRED_TOPIC = "retired"
+STATUS_REPO = "homie-catcher"  # holds the budget-status issue that workflows read (D62)
 READONLY_TOKEN_PERMISSIONS: dict[str, str] = {"contents": "read", "issues": "read", "pull_requests": "read", "metadata": "read"}
 
 REPO_SETTINGS: dict[str, bool] = {
@@ -87,11 +91,20 @@ ENDPOINTS: tuple[Endpoint, ...] = (
     Endpoint("GET", "/repos/{owner}/{repo}/pulls/{number}/reviews"),
     Endpoint("GET", "/repos/{owner}/{repo}/issues/{number}/comments"),
     Endpoint("GET", "/repos/{owner}/{repo}/commits/{sha}/check-runs"),
-    # --- Administration permission: these four only ---
+    Endpoint("GET", "/repos/{owner}/{repo}/topics"),
+    Endpoint("GET", "/repos/{owner}/{repo}/contents"),
+    Endpoint("GET", "/repos/{owner}/{repo}/contents/{name}"),
+    Endpoint("GET", "/repos/{owner}/{repo}/issues"),
+    Endpoint("GET", "/repos/{owner}/{repo}/issues/comments"),
+    Endpoint("POST", "/repos/{owner}/{repo}/issues/{number}/comments"),
+    Endpoint("PATCH", "/repos/{owner}/{repo}/issues/{number}"),
+    # --- Administration permission: these only (bodies/targets pinned in check_allowed) ---
     Endpoint("POST", "/repos/{owner}/{repo}/generate", admin=True),
     Endpoint("POST", "/orgs/{org}/repos", admin=True),
     Endpoint("PATCH", "/repos/{owner}/{repo}", admin=True),
     Endpoint("PUT", "/repos/{owner}/{repo}/branches/main/protection", admin=True),
+    Endpoint("PUT", "/repos/{owner}/{repo}/topics", admin=True),
+    Endpoint("DELETE", "/repos/{owner}/{repo}", admin=True),
 )
 
 
@@ -168,8 +181,22 @@ class GitHub:
                 raise EndpointNotAllowed("token requests may only ask for read permissions on allowed repos")
         if ep.template == "/repos/{owner}/{repo}/generate" and params["repo"] != TEMPLATE_REPO:
             raise EndpointNotAllowed("repos may only be generated from the template repo")
-        if ep.method == "PATCH" and body != REPO_SETTINGS:
-            raise EndpointNotAllowed("PATCH /repos is limited to the fixed new-repo settings")
+        repo = params.get("repo", "").lower()
+        if ep.template == "/repos/{owner}/{repo}" and ep.method == "PATCH":
+            archive_toggle = isinstance(body, dict) and set(body) == {"archived"} and isinstance(body["archived"], bool)
+            if body != REPO_SETTINGS and not archive_toggle:
+                raise EndpointNotAllowed("PATCH /repos is limited to the new-repo settings or {archived: bool}")
+            if archive_toggle and repo in RETIRE_PROTECTED:
+                raise EndpointNotAllowed(f"repo {repo!r} is protected from retire/restore")
+        if ep.template.endswith("/topics") and ep.method == "PUT":
+            names = body.get("names") if isinstance(body, dict) else None
+            if repo in RETIRE_PROTECTED or not isinstance(names, list) or set(body) != {"names"}:
+                raise EndpointNotAllowed("topics may only be replaced on non-protected repos")
+        if ep.method == "DELETE" and repo in RETIRE_PROTECTED:
+            raise EndpointNotAllowed(f"repo {repo!r} is protected from deletion")
+        if ep.method == "PATCH" and ep.template.endswith("/issues/{number}"):
+            if repo != STATUS_REPO or not isinstance(body, dict) or set(body) - {"body"}:
+                raise EndpointNotAllowed("issues may only be edited for the budget-status issue body")
         if ep.template.endswith("/branches/main/protection") and body != BRANCH_PROTECTION:
             raise EndpointNotAllowed("branch protection body must be the fixed policy")
         if ep.template == "/orgs/{org}/repos" and (not isinstance(body, dict) or body.get("private") is not False):
@@ -286,7 +313,59 @@ class GitHub:
         resp = await self.request("POST", f"/repos/{self.org}/{repo}/issues", json={"title": title, "body": body, "labels": labels})
         return {"number": resp.body["number"], "html_url": resp.body["html_url"]}
 
-    # ---- new-repo path (the only Administration use) ---------------------
+    # ---- read helpers (app-channel context) --------------------------------
+    async def list_root(self, repo: str) -> list[str]:
+        resp = await self.request("GET", f"/repos/{self.org}/{repo}/contents")
+        return [e.get("name") for e in resp.body or [] if isinstance(e, dict)]
+
+    async def read_text(self, repo: str, name: str) -> str:
+        import base64
+
+        resp = await self.request("GET", f"/repos/{self.org}/{repo}/contents/{name}")
+        body = resp.body or {}
+        return base64.b64decode(body.get("content") or "").decode("utf-8", errors="replace") if body.get("encoding") == "base64" else ""
+
+    async def open_issues(self, repo: str) -> list[dict]:
+        resp = await self.request("GET", f"/repos/{self.org}/{repo}/issues", params={"state": "open", "per_page": 20})
+        return resp.body or []
+
+    # ---- comments / status issue (Issues permission) ----------------------
+    async def comment(self, repo: str, number: int, body: str) -> dict:
+        resp = await self.request("POST", f"/repos/{self.org}/{repo}/issues/{number}/comments", json={"body": body})
+        return resp.body
+
+    async def repo_comments_since(self, repo: str, since_iso: str) -> list[dict]:
+        resp = await self.request(
+            "GET", f"/repos/{self.org}/{repo}/issues/comments", params={"since": since_iso, "per_page": 100, "sort": "updated"}
+        )
+        return resp.body or []
+
+    async def find_issue(self, repo: str, label: str) -> dict | None:
+        resp = await self.request("GET", f"/repos/{self.org}/{repo}/issues", params={"labels": label, "state": "open", "per_page": 5})
+        return (resp.body or [None])[0]
+
+    async def set_issue_body(self, repo: str, number: int, body: str) -> None:
+        await self.request("PATCH", f"/repos/{self.org}/{repo}/issues/{number}", json={"body": body})
+
+    # ---- retire / restore / delete (Administration; protected repos refused in check_allowed) --
+    async def repo_info(self, name: str) -> dict | None:
+        resp = await self.request("GET", f"/repos/{self.org}/{name}", ok404=True)
+        return None if resp.status == 404 else resp.body
+
+    async def get_topics(self, name: str) -> list[str]:
+        resp = await self.request("GET", f"/repos/{self.org}/{name}/topics")
+        return list((resp.body or {}).get("names") or [])
+
+    async def set_topics(self, name: str, topics: list[str]) -> None:
+        await self.request("PUT", f"/repos/{self.org}/{name}/topics", json={"names": list(topics)})
+
+    async def set_archived(self, name: str, archived: bool) -> None:
+        await self.request("PATCH", f"/repos/{self.org}/{name}", json={"archived": archived})
+
+    async def delete_repo(self, name: str) -> None:
+        await self.request("DELETE", f"/repos/{self.org}/{name}")
+
+    # ---- new-repo path ----------------------------------------------------
     async def generate_repo_from_template(self, name: str, description: str) -> None:
         await self.request(
             "POST",

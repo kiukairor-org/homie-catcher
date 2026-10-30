@@ -54,6 +54,7 @@ class Poller:
                     log.warning("GitHub rate limit low (%s left); skipping poll", self.gh.rate_remaining)
                 else:
                     await self.poll_once()
+                await self.c.channels.reconcile()  # app channels backfill (every 30 min)
             except Exception:
                 log.exception("poll failed")
             await asyncio.sleep(interval)

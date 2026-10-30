@@ -42,15 +42,14 @@ class Config:
     poll_interval_s: int = 60
     ingest_token: str | None = field(default=None, repr=False)  # CATCHER_INGEST_TOKEN; unset -> /ingest disabled
     nr_target_repo: str = "agentic-demo"
-    app_domain: str = "tail8e3e5b.ts.net"
+    app_domain: str = "tail8e3e5b.ts.net"  # APP_DOMAIN: tailnet suffix of app/preview Ingress hosts
     brainstorm_channel: str = "brainstorm"  # MM_BRAINSTORM_CHANNEL; missing channel = feature off
     brainstorm_runs_per_hour: int = 30  # BRAINSTORM_RUNS_PER_HOUR (chat replies + drafts)
     brainstorm_max_turns: int = 10  # BRAINSTORM_MAX_TURNS: Claude agentic turns per reply
     brainstorm_draft_max_turns: int = 6
     mm_public_url: str = "https://chat.tail8e3e5b.ts.net"  # MM_PUBLIC_URL: for thread permalinks
-    mcp_python: str = (
-        "/opt/plane-mcp/bin/python"  # runs the read-only GitHub MCP server  # APP_DOMAIN: tailnet suffix of app/preview Ingress hosts
-    )
+    mcp_python: str = "/opt/plane-mcp/bin/python"  # MCP_PYTHON: runs the read-only GitHub MCP server
+    app_channels: bool = True  # APP_CHANNELS: one ~<repo> channel per app
     listen_port: int = 8080
 
     @classmethod
@@ -106,6 +105,7 @@ class Config:
             brainstorm_runs_per_hour=_int_between(env, "BRAINSTORM_RUNS_PER_HOUR", 30, 1, 200),
             brainstorm_max_turns=_int_between(env, "BRAINSTORM_MAX_TURNS", 10, 2, 10),
             mm_public_url=env.get("MM_PUBLIC_URL", "https://chat.tail8e3e5b.ts.net").strip().rstrip("/"),
+            app_channels=env.get("APP_CHANNELS", "true").strip().lower() not in ("0", "false", "no", "off"),
             mcp_python=env.get("MCP_PYTHON", "/opt/plane-mcp/bin/python").strip() or "/opt/plane-mcp/bin/python",
         )
 
