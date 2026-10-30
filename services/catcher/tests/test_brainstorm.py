@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 
 from catcher.brainstorm import MAX_OWNER_TURNS, Brainstorm
@@ -42,11 +43,14 @@ def test_owner_only_history_images_and_promote_offer():
         # a stranger is ignored entirely
         await bot.handle_post(post("hi", user=STRANGER, channel=BRAINSTORM))
         assert runner.runs == []
-        svc.files["f1"] = {"info": {"id": "f1", "name": "sketch.png", "mime_type": "image/png", "size": 4}, "data": b"\x89PNG"}
-        root = post("dice notation for dice-service?", channel=BRAINSTORM, file_ids=["f1"])
+        png = b"\x89PNG\r\n\x1a\n" + b"x" * 8 + b"IEND\xaeB`\x82"
+        svc.files["f1"] = {"info": {"id": "f1", "name": "sketch.png", "mime_type": "image/png", "size": len(png)}, "data": png}
+        svc.files["f2"] = {"info": {"id": "f2", "name": "cut.png", "mime_type": "image/png", "size": 9}, "data": png[:9]}
+        root = post("dice notation for dice-service?", channel=BRAINSTORM, file_ids=["f1", "f2"])
         await bot.handle_post(root)
         r0 = runner.runs[0]
-        assert r0["images"] == [("image/png", "iVBORw==")]
+        assert r0["images"] == [("image/png", base64.b64encode(png).decode())]
+        assert "cut.png (unreadable image, skipped)" in r0["text"]
         assert "dice notation for dice-service?" in r0["text"] and "sketch.png (image, attached)" in r0["text"]
         assert r0["max_turns"] == 10 and r0["github_token"].startswith("ghs_")
         assert "release" not in r0["repos"] and "papl" not in r0["repos"]
@@ -165,5 +169,28 @@ def test_readonly_token_guard():
                 continue
             raise AssertionError(f"allowed: {json.dumps(bad)}")
         assert ORG
+
+    asyncio.run(go())
+
+
+def test_read_capped_reads_all_chunks_and_caps():
+    from catcher.transport import HttpError, read_capped
+
+    class Stream:  # returns small chunks, like aiohttp's StreamReader
+        def __init__(self, data):
+            self.data = data
+
+        async def read(self, n):
+            chunk, self.data = self.data[:7], self.data[7:]
+            return chunk
+
+    async def go():
+        assert await read_capped(Stream(b"x" * 100), 1000) == b"x" * 100
+        try:
+            await read_capped(Stream(b"x" * 100), 50)
+        except HttpError as exc:
+            assert exc.status == 413
+        else:
+            raise AssertionError("not capped")
 
     asyncio.run(go())

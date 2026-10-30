@@ -40,6 +40,18 @@ class Transport(Protocol):
     ) -> Response: ...
 
 
+async def read_capped(stream: Any, max_bytes: int, url: str = "") -> bytes:
+    """Read a whole body in chunks (StreamReader.read(n) may return fewer than n bytes), refusing > max_bytes."""
+    buf = bytearray()
+    while True:
+        chunk = await stream.read(64 * 1024)
+        if not chunk:
+            return bytes(buf)
+        buf += chunk
+        if len(buf) > max_bytes:
+            raise HttpError("GET", url, 413, None)
+
+
 class AiohttpTransport:
     def __init__(self, session: Any) -> None:
         self.session = session
@@ -51,10 +63,7 @@ class AiohttpTransport:
         async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
             if resp.status != 200:
                 raise HttpError("GET", url, resp.status, None)
-            data = await resp.content.read(max_bytes + 1)
-            if len(data) > max_bytes:
-                raise HttpError("GET", url, 413, None)
-            return data
+            return await read_capped(resp.content, max_bytes, url)
 
     async def send(self, method, url, *, headers=None, json=None, params=None, timeout=30) -> Response:
         import aiohttp

@@ -160,6 +160,18 @@ def chat_safe(text: str) -> str:
     return re.sub(r"@(?=[A-Za-z0-9_.-])", "@" + ZWSP, text)
 
 
+_MAGIC = {"image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\xd8\xff",), "image/gif": (b"GIF87a", b"GIF89a")}
+
+
+def _looks_like(mime: str, data: bytes) -> bool:
+    """Complete-looking image of the declared type (a truncated download must not reach Claude)."""
+    if mime == "image/webp":
+        return data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 8 + int.from_bytes(data[4:8], "little")
+    if mime == "image/png" and not data.endswith(b"IEND\xaeB`\x82"):
+        return False
+    return any(data.startswith(m) for m in _MAGIC.get(mime, ()))
+
+
 def _data(text: str) -> str:
     return html.escape(text, quote=False)
 
@@ -349,6 +361,9 @@ class Brainstorm:
                 notes.append(f"{name} (over the {MAX_IMAGES} images / 5 MB limit, skipped)")
                 continue
             data = await self.c.mm.file_bytes(fid, MAX_IMAGE_BYTES)
+            if not _looks_like(mime, data):
+                notes.append(f"{name} (unreadable image, skipped)")
+                continue
             images.append((mime, base64.b64encode(data).decode()))
             notes.append(f"{name} (image, attached)")
         return images, notes
