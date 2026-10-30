@@ -133,7 +133,7 @@ def test_dedupe_and_never_auto_approves_then_owner_approve():
         assert wi["name"].startswith("[NR] ")
         assert svc.plane_state_name(wi["id"]) == "Needs triage"
         proj = svc.plane_projects[0]
-        assert proj["name"] == "agentic-demo"
+        assert proj["name"] == "agentic_demo"  # Plane-safe name
         bug = next(lbl["id"] for lbl in svc.plane_labels[proj["id"]] if lbl["name"] == "bug")
         assert wi["labels"] == [bug]
         # root post in #ideas, thread remembers the target repo, no GitHub write yet

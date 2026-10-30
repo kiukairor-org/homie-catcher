@@ -65,7 +65,7 @@ def test_named_repo_routes_without_asking():
         await bot.run_next()
         assert "kiukairor-org/agentic-demo" in claude.prompts[0]
         assert bot.db.latest_item(svc.posts[0]["root_id"])["status"] == "triage"
-        assert svc.plane_projects[0]["name"] == "agentic-demo"
+        assert svc.plane_projects[0]["name"] == "agentic_demo"  # Plane-safe name
 
     asyncio.run(go())
 
