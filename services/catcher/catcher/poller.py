@@ -22,7 +22,7 @@ PREVIEW_COMMENT_AUTHORS = frozenset({"kiu-homie-bot[bot]", "github-actions[bot]"
 _PREVIEW = re.compile(r"Preview:\s*(https://[A-Za-z0-9.-]+(?::\d+)?(?:/[^\s<>()\[\]`]*)?)")
 
 
-DEPLOY_TIMEOUT_S = 30 * 60
+DEPLOY_TIMEOUT_S = 60 * 60  # ApplicationSet polls every 30 min until the read-only Argo App exists (D33)
 
 
 def prod_version_url(repo: str) -> str:
