@@ -51,6 +51,11 @@ class Project:
     labels: dict[str, str] = field(default_factory=dict)  # name -> label id
 
 
+def project_name_for(repo: str) -> str:
+    """Plane rejects names containing any of &+,:;$^}{*=?@#|'<>.()%!- (FORBIDDEN_IDENTIFIER_CHARS_PATTERN)."""
+    return re.sub(r"[^A-Za-z0-9_ ]", "_", repo)
+
+
 def identifier_for(repo: str) -> str:
     ident = re.sub(r"[^A-Za-z0-9]", "", repo).upper()[:12]
     return ident or "APP"
@@ -87,7 +92,7 @@ class Plane:
     async def find_project(self, name: str) -> dict | None:
         resp = await self._req("GET", "/projects/", params={"per_page": 100})
         for p in _results(resp.body):
-            if p.get("name", "").lower() == name.lower():
+            if p.get("name", "").lower() in (name.lower(), project_name_for(name).lower()):
                 return p
         return None
 
@@ -100,7 +105,7 @@ class Plane:
                 resp = await self._req(
                     "POST",
                     "/projects/",
-                    json={"name": repo, "identifier": ident, "description": f"kiukairor-org/{repo} (homie-catcher)", "network": 2},
+                    json={"name": project_name_for(repo), "identifier": ident, "description": f"kiukairor-org/{repo} (homie-catcher)", "network": 2},
                 )
                 return resp.body
             except HttpError as exc:
