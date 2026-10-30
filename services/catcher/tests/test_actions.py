@@ -124,8 +124,9 @@ def test_new_repo_needs_its_own_approve():
         assert gen.json == {"owner": ORG, "name": "recipe-box", "description": "Recipes", "private": False, "include_all_branches": False}
         assert ("PATCH", f"/repos/{ORG}/recipe-box") in writes
         assert ("PUT", f"/repos/{ORG}/recipe-box/branches/main/protection") in writes
-        assert svc.gh_labels["recipe-box"] == {"agent", "needs-human", "hold", "preview", "fix-round-1", "fix-round-2"}
+        assert svc.gh_labels["recipe-box"] == {"agent", "needs-human", "hold", "preview", "fix-round-1", "fix-round-2", "build-v1"}
         assert svc.issues[0]["repo"] == "recipe-box" and svc.issues[0]["title"].startswith("Build v1")
+        assert svc.issues[0]["labels"] == ["build-v1", "agent"]  # D69: v1 marker for the reviewer size limit
         assert "Build v1 of this app" in svc.issues[0]["body"]
         assert bot.db.thread(p["id"])["repo"] == "recipe-box"
         # replay of the repo approve does nothing

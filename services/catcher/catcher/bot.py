@@ -24,7 +24,7 @@ from .channels import AppChannels
 from .claude_runner import MAX_CLARIFY_ROUNDS, ClaudeError, RunContext, build_prompt
 from .config import Config
 from .db import DB
-from .github import GitHub
+from .github import V1_LABEL, GitHub
 from .mattermost import Mattermost
 from .plane import Plane, Project
 from .routing import (
@@ -509,9 +509,13 @@ class Catcher:
             spec = validate_spec(json.loads(item["spec_json"]))
             url = self.plane.item_url(proj.project_id, item["plane_item_id"])
             await self.gh.ensure_label(repo, "agent")
+            labels = ["agent"]
+            if new_app:  # first build of a repo created by the new-idea flow (reviewer limit 2000, D69)
+                await self.gh.ensure_label(repo, V1_LABEL, "1d76db", "First Build v1 of a new app (reviewer size limit 2000, D69)")
+                labels = [V1_LABEL, "agent"]
             title = f"Build v1: {spec.title}" if new_app else spec.title
             body = issue_body(spec, url, item["root_post_id"], item["plane_item_id"], new_app=new_app)
-            issue = await self.gh.create_issue(repo, title, body, ["agent"])
+            issue = await self.gh.create_issue(repo, title, body, labels)
             self.db.update_item(item_id, gh_issue_number=issue["number"], gh_issue_url=issue["html_url"])
             item = self.db.item(item_id)
         await self.announce(item_id, f"📋 GitHub issue opened: {item['gh_issue_url']}")

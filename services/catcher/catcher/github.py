@@ -53,6 +53,10 @@ BRANCH_PROTECTION: dict[str, Any] = {
     "allow_deletions": False,
 }
 
+# Set by the catcher ONLY on the Build v1 issue of a repo it just created (D69). The reviewer gate also requires
+# a repo with no merged PR yet, so the label alone cannot raise the size limit later.
+V1_LABEL = "build-v1"
+
 NEW_REPO_LABELS: tuple[tuple[str, str, str], ...] = (
     ("agent", "5319e7", "Work for the Claude agent"),
     ("needs-human", "d93f0b", "Escalated: a human must look"),
@@ -60,6 +64,7 @@ NEW_REPO_LABELS: tuple[tuple[str, str, str], ...] = (
     ("preview", "0e8a16", "Deploy a PR preview"),
     ("fix-round-1", "fbca04", "Agent fix round 1 used"),
     ("fix-round-2", "fbca04", "Agent fix round 2 used"),
+    (V1_LABEL, "1d76db", "First Build v1 of a new app (reviewer size limit 2000, D69)"),
 )
 
 _SEG = r"[A-Za-z0-9._-]+"
