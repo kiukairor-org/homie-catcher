@@ -26,6 +26,7 @@ API = "https://api.github.com"
 TEMPLATE_REPO = "app-template"
 REVIEWER_LOGIN = "kiu-homie-reviewer[bot]"
 TOKEN_REFRESH_MARGIN_S = 300
+FORBIDDEN_REPOS = frozenset({"release", "papl", "homelab-gitops"})
 
 REPO_SETTINGS: dict[str, bool] = {
     "allow_auto_merge": True,
@@ -144,6 +145,9 @@ class GitHub:
             raise EndpointNotAllowed(f"owner {params['owner']!r} is not {self.org!r}")
         if "org" in params and params["org"] != self.org:
             raise EndpointNotAllowed(f"org {params['org']!r} is not {self.org!r}")
+        # Owner hard limit: never touch these repos, whatever the caller asks (defence in depth over routing).
+        if params.get("repo", "").lower() in FORBIDDEN_REPOS:
+            raise EndpointNotAllowed(f"repo {params['repo']!r} is off-limits")
         if "installation_id" in params and params["installation_id"] != self.installation_id:
             raise EndpointNotAllowed("unexpected installation id")
         if ep.template == "/repos/{owner}/{repo}/generate" and params["repo"] != TEMPLATE_REPO:

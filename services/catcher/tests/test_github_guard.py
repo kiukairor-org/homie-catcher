@@ -125,6 +125,10 @@ def _gh():
         ("POST", f"/orgs/{ORG}/repos", {"name": "x", "private": True}),
         ("GET", f"/repos/{ORG}/..", None),
         ("GET", "/user", None),
+        ("POST", f"/repos/{ORG}/release/issues", {"title": "x"}),
+        ("GET", f"/repos/{ORG}/papl", None),
+        ("POST", f"/repos/{ORG}/PAPL/labels", {}),
+        ("GET", f"/repos/{ORG}/homelab-gitops/pulls", None),
     ],
 )
 def test_request_refuses_non_allowlisted(method, path, body):
