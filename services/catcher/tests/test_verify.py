@@ -141,7 +141,7 @@ def test_unsupported_claims():
     for claim in ("It was merged and deployed.", "The change is live now. Enjoy!", "PR #7 got merged yesterday",
                   "Your fix shipped this morning."):  # fmt: skip
         assert unsupported_claims(claim), claim
-    for ok in (f"PR #7 merged: {PR}", "Deployed as 0cc9e58, Argo Healthy.", "It has not been deployed yet.",
+    for ok in (f"PR #7 merged: {PR}", "Deployed as 0cc9e58, Argo Healthy.", "- The app is deployed. — _image 67754a820035102f3c01aa0bdae2040469db2338_", "It has not been deployed yet.",
                "I can't verify that it was deployed.", "Was it merged?", "Not verified: deploy state.",
                "No PR yet, so nothing is deployed."):  # fmt: skip
         assert not unsupported_claims(ok), ok

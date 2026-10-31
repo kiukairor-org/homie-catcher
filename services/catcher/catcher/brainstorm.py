@@ -252,7 +252,7 @@ _HANDOFF_PATTERNS = (
 HANDOFF_WARNING = "⚠️ Nothing has been sent to the agent from this message."
 # D74: claims about merges/deploys must carry evidence (a link or a version SHA) on the same line.
 _CLAIM = re.compile(r"\b(?:merged|deployed|is live|now live|went live|rolled out|released|shipped|in production)\b", re.I)
-_EVIDENCE = re.compile(r"https?://\S+|\b[0-9a-f]{7,40}\b")
+_EVIDENCE = re.compile(r"https?://\S+|(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")  # SHA may touch markdown `_`/`*`
 EVIDENCE_WARNING = "⚠️ Unverified: a merge or deploy is mentioned above without a link or version as evidence."
 
 

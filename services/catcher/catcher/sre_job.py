@@ -58,7 +58,10 @@ MODE_RULES = {
     "open_revert_pr or restart_deployment; describe the fix in proposed_fix (the owner decides).",
     "owner": "The owner ordered this investigation. If the cause is a code or config bug in this repo and your confidence is "
     "medium or high, open ONE small fix PR with open_fix_pr (or open_revert_pr when a recent commit broke it: rollback "
-    "under GitOps = a revert PR). Do NOT restart anything (restart_deployment is not allowed in this run).",
+    "under GitOps = a revert PR). A definite defect that causes OR HIDES the reported symptom (e.g. error handling that "
+    "mislabels every failure, a swallowed exception) is such a bug: fix it with a small, safe PR (surface the real error, "
+    "keep behaviour otherwise) even when the deeper root cause stays unknown; confidence is about the fix being right. "
+    "Do NOT restart anything (restart_deployment is not allowed in this run).",
     "fix": "The owner ordered a FIX. Open ONE small fix PR (open_fix_pr) for a code/config bug, or a revert PR "
     "(open_revert_pr) when a recent commit broke it. restart_deployment only when a restart itself fixes the problem "
     "(e.g. a stuck pod), at most once.",
