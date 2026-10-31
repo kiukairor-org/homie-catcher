@@ -38,7 +38,7 @@ DEFAULT_WEEKLY_USD = 60.0  # D68 (owner): warn 80% = $48, block at $60
 WARN_FRACTION = 0.8
 UNLOCK_FRACTION = 0.5  # `unlock` grants +50% of the daily budget for the rest of the UTC day (D68)
 _UNLOCK = re.compile(r"^\s*unlock\s*$", re.I)
-NONESSENTIAL = frozenset({"spec", "brainstorm", "channel_chat", "promote"})
+NONESSENTIAL = frozenset({"spec", "brainstorm", "channel_chat", "promote", "sre"})
 STATUS_LABEL = "budget-status"
 PUBLISH_HEARTBEAT_S = 600
 LIMIT_FALLBACK_S = 3600

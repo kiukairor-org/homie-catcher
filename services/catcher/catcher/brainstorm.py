@@ -114,8 +114,9 @@ CHAT_SCHEMA: dict[str, Any] = {
     "required": ["reply", "intent", "request"],
     "properties": {
         "reply": {"type": "string", "minLength": 1, "maxLength": MAX_REPLY_CHARS},
-        "intent": {"type": "string", "enum": ["answer", "order", "ambiguous"]},
+        "intent": {"type": "string", "enum": ["answer", "order", "ambiguous", "investigate"]},
         "request": {"anyOf": [DRAFT_SCHEMA, {"type": "null"}]},
+        "fix_requested": {"type": "boolean"},
     },
 }
 
@@ -168,6 +169,15 @@ OUTPUT: one JSON object.
   {{"kind": "new", "repo": "<new-repo-name>"}}; problem (2-5 sentences, include the owner's own words);
   build (3-6 points); acceptance_criteria (2-8 testable statements); out_of_scope (may be empty);
   related_pr: the number of an OPEN agent pull request in that repo that this feedback is about, else null."""
+
+SRE_SYSTEM = """
+SRE AGENT (this app channel only): when the owner ORDERS an investigation of a live problem in this app ("investigate
+why it shows Offline", "check the logs", "debug the 500s", "find out why it crashes and fix it"), use intent
+"investigate": the bot starts the SRE agent (a separate run with read access to the app's pods, logs, events, Argo CD
+and New Relic, which may open a fix PR). Set fix_requested=true only if the owner also asked to FIX, restart or roll
+back. Your reply: one or two sentences on what will be investigated (never claim it started; the bot posts the run id).
+A question about whether a delivered change worked is NOT an investigation: answer it yourself with the
+verification tools (intent "answer"). request: null for "investigate"."""
 
 VERIFY_SYSTEM = """
 VERIFICATION TOOLS (this app channel only; read-only; scoped to kiukairor-org/{repo}):
@@ -693,6 +703,8 @@ class Brainstorm:
             system, turns = CHAT_SYSTEM, self.cfg.brainstorm_max_turns
             if th["repo"]:
                 system, turns = CHAT_SYSTEM + "\n" + VERIFY_SYSTEM.replace("{repo}", th["repo"]), VERIFY_MAX_TURNS
+                if getattr(self.c, "sre", None) is not None and self.c.sre.enabled():
+                    system += "\n" + SRE_SYSTEM
             out = await self._run(root, system=system, text=prompt, images=images, schema=CHAT_SCHEMA,
                                   max_turns=turns, feature=feature, verify_repo=th["repo"] or None)  # fmt: skip
             if not isinstance(out, dict) or not isinstance(out.get("reply"), str) or not out["reply"].strip():
@@ -710,6 +722,18 @@ class Brainstorm:
         reply = clip(out["reply"].strip(), MAX_REPLY_CHARS)
         self._add_msg(root, "assistant", reply)
         intent, draft = out.get("intent", "answer"), None
+        sre = getattr(self.c, "sre", None)
+        if intent == "investigate" and th["repo"] and sre is not None and sre.enabled():
+            # D75: the owner's order wakes the SRE agent for this repo; the bot posts the run id as proof.
+            await self.say(root, chat_safe(guard_evidence(reply)), kind=CHAT_KIND)  # the run id follows from the bot
+            mode = "fix" if out.get("fix_requested") is True else "owner"
+            run_id = await sre.start(repo=th["repo"], root=root, channel=th["channel_id"], task=text, mode=mode,
+                                     thread_link=self.thread_link(root))  # fmt: skip
+            if run_id:
+                self._set(root, handoff_url=f"SRE run {run_id}")
+            return
+        if intent == "investigate":
+            intent = "answer"  # #brainstorm, or the SRE agent is off: a plain answer
         if intent in ("order", "ambiguous") and isinstance(out.get("request"), dict):
             try:
                 draft = validate_draft(out["request"])

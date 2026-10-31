@@ -17,10 +17,12 @@ from .claude_runner import ClaudeRunner
 from .config import Config
 from .db import DB
 from .github import GitHub
+from .k8s import SA_DIR, K8s
 from .logsetup import setup_logging
 from .mattermost import Mattermost
 from .plane import Plane
 from .poller import Poller
+from .sre import SreManager
 from .transport import AiohttpTransport
 
 log = logging.getLogger(__name__)
@@ -91,7 +93,11 @@ async def main() -> None:
         bs_runner.on_result = lambda feature, result, err: catcher.usage.record(
             feature, result, ok=bool(result) and not result.get("is_error"), error=err
         )
+        if cfg.sre_image and os.path.exists(os.path.join(SA_DIR, "token")):  # D75: SRE agent Jobs in namespace sre
+            catcher.sre = SreManager(catcher, K8s(session))
         await catcher.startup()
+        if catcher.sre is not None:
+            catcher.sre.resume()
 
         runner = web.AppRunner(make_app(catcher), access_log=None)
         await runner.setup()

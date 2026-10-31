@@ -97,6 +97,7 @@ def test_patch_and_protection_only_called_from_new_repo_path():
         "set_archived": {"PATCH"},
         "delete_repo": {"DELETE"},
         "set_issue_body": {"PATCH"},
+        "close_issue": {"PATCH"},  # D75: SRE tracking issue, body fixed to {state: closed}
     }
     # retire/restore/delete helpers are only used by the owner-confirmed admin flow
     tree_a = ast.parse((PKG / "admin.py").read_text())

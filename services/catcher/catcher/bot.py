@@ -66,6 +66,8 @@ class Catcher:
         self._repos: tuple[float, list[str]] = (0.0, [])
         self._tasks: set[asyncio.Task] = set()
         self.brainstorm: Any = None  # catcher.brainstorm.Brainstorm, attached by the app (optional)
+        self.sre: Any = None  # catcher.sre.SreManager, attached by the app when the SRE agent is enabled (D75)
+        self.sleep: Callable[[float], Any] = asyncio.sleep
         self.admin: Any = None
         self.admin = Admin(self)
         self.channels = AppChannels(self)
@@ -737,6 +739,10 @@ class Catcher:
             f"{header}\nPlane ({proj.identifier}-{wi.get('sequence_id')}, Triage): {url}",
             attachments=[{"text": "Approve to hand this to the agent (GitHub issue in " + repo + ").", "actions": actions}],
         )
+        if self.cfg.sre_on_alerts and self.sre is not None and self.sre.enabled():
+            # D75: an alert may wake the SRE agent for INVESTIGATION ONLY; the fix still needs the Approve above.
+            await self.sre.start(repo=repo, root=root, channel=self.ideas_channel_id, task=summary_plain, mode="alert",
+                                 thread_link=f"{self.cfg.mm_public_url}/{self.cfg.mm_team}/pl/{root}")  # fmt: skip
 
     # ----------------------------------------------------------- milestones
     async def announce(self, item_id: int, text: str) -> None:

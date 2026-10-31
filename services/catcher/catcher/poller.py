@@ -75,6 +75,8 @@ class Poller:
                     await self.track_pr(item, pr)
 
     async def _plane(self, item, key: str) -> None:
+        if not item["plane_item_id"]:  # SRE tracking items have no Plane item (D75)
+            return
         try:
             proj = await self.c.plane_project(item["repo"])
             await self.plane.set_state(proj, item["plane_item_id"], key)

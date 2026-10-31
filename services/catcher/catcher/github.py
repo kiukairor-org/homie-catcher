@@ -32,6 +32,8 @@ RETIRE_PROTECTED = frozenset({"homelab-gitops", "app-template", "homie-catcher",
 RETIRED_TOPIC = "retired"
 STATUS_REPO = "homie-catcher"  # holds the budget-status issue that workflows read (D62)
 READONLY_TOKEN_PERMISSIONS: dict[str, str] = {"contents": "read", "issues": "read", "pull_requests": "read", "metadata": "read"}
+# D75: the SRE agent's token for an owner-ordered run: one app repo, code + PRs + issues. Never administration/workflows.
+SRE_TOKEN_PERMISSIONS: dict[str, str] = {"contents": "write", "issues": "write", "pull_requests": "write", "metadata": "read"}
 
 REPO_SETTINGS: dict[str, bool] = {
     "allow_auto_merge": True,
@@ -174,7 +176,15 @@ class GitHub:
             if not isinstance(body, dict):
                 raise EndpointNotAllowed("token request body must be an object")
             perms, repos = body.get("permissions"), body.get("repositories")
-            if (
+            sre_write = (
+                perms == SRE_TOKEN_PERMISSIONS
+                and set(body) == {"permissions", "repositories"}
+                and isinstance(repos, list)
+                and len(repos) == 1
+                and isinstance(repos[0], str)
+                and repos[0].lower() not in FORBIDDEN_REPOS | RETIRE_PROTECTED
+            )
+            if not sre_write and (
                 set(body) - {"permissions", "repositories"}
                 or not isinstance(perms, dict)
                 or not perms
@@ -200,8 +210,9 @@ class GitHub:
         if ep.method == "DELETE" and repo in RETIRE_PROTECTED:
             raise EndpointNotAllowed(f"repo {repo!r} is protected from deletion")
         if ep.method == "PATCH" and ep.template.endswith("/issues/{number}"):
-            if repo != STATUS_REPO or not isinstance(body, dict) or set(body) - {"body"}:
-                raise EndpointNotAllowed("issues may only be edited for the budget-status issue body")
+            closing = body == {"state": "closed", "state_reason": "completed"} and repo not in RETIRE_PROTECTED
+            if not closing and (repo != STATUS_REPO or not isinstance(body, dict) or set(body) - {"body"}):
+                raise EndpointNotAllowed("issues may only be closed (app repos) or the budget-status body edited")
         if ep.template.endswith("/branches/main/protection") and body != BRANCH_PROTECTION:
             raise EndpointNotAllowed("branch protection body must be the fixed policy")
         if ep.template == "/orgs/{org}/repos" and (not isinstance(body, dict) or body.get("private") is not False):
@@ -313,6 +324,17 @@ class GitHub:
         resp = await self.request("GET", f"/repos/{self.org}/{repo}/labels/{name}", ok404=True)
         if resp.status == 404:
             await self.request("POST", f"/repos/{self.org}/{repo}/labels", json={"name": name, "color": color, "description": description})
+
+    async def sre_token(self, repo: str, write: bool) -> str:
+        """Token for one SRE run: read on [repo], or SRE_TOKEN_PERMISSIONS for an owner-ordered run (D75)."""
+        if not write:
+            return await self.readonly_token([repo])
+        resp = await self.request("POST", f"/app/installations/{self.installation_id}/access_tokens",
+                                  json={"repositories": [repo], "permissions": dict(SRE_TOKEN_PERMISSIONS)})  # fmt: skip
+        return resp.body["token"]
+
+    async def close_issue(self, repo: str, number: int) -> None:
+        await self.request("PATCH", f"/repos/{self.org}/{repo}/issues/{number}", json={"state": "closed", "state_reason": "completed"})
 
     async def create_issue(self, repo: str, title: str, body: str, labels: list[str]) -> dict:
         resp = await self.request("POST", f"/repos/{self.org}/{repo}/issues", json={"title": title, "body": body, "labels": labels})

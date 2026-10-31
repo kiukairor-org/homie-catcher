@@ -53,6 +53,9 @@ class Config:
     nr_key_file: str = "/secrets/newrelic/NEW_RELIC_API_KEY"  # NR_KEY_FILE: user key file for the verify tools (D74)
     nr_account_id: str = ""  # NEW_RELIC_ACCOUNT_ID
     nr_region: str = "EU"  # NEW_RELIC_REGION
+    sre_image: str = ""  # SRE_IMAGE: catcher image for SRE Jobs; empty = SRE agent off (D75)
+    sre_max_turns: int = 40  # SRE_MAX_TURNS
+    sre_on_alerts: bool = False  # SRE_ON_ALERTS: NR alerts may wake an investigation-only run
     listen_port: int = 8080
 
     @classmethod
@@ -113,6 +116,9 @@ class Config:
             nr_key_file=env.get("NR_KEY_FILE", "/secrets/newrelic/NEW_RELIC_API_KEY").strip(),
             nr_account_id=env.get("NEW_RELIC_ACCOUNT_ID", "").strip(),
             nr_region=(env.get("NEW_RELIC_REGION", "EU").strip().upper() or "EU"),
+            sre_image=env.get("SRE_IMAGE", "").strip(),
+            sre_max_turns=_int_between(env, "SRE_MAX_TURNS", 40, 5, 80),
+            sre_on_alerts=env.get("SRE_ON_ALERTS", "false").strip().lower() in ("1", "true", "yes", "on"),
         )
 
     def secret_values(self) -> list[str]:
