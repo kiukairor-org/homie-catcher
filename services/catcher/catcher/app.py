@@ -85,7 +85,8 @@ async def main() -> None:
         bs_runner = BrainstormRunner(claude_bin=cfg.claude_bin, plane_mcp_bin=cfg.plane_mcp_bin, plane_base_url=cfg.plane_base_url,
                                      plane_api_key=cfg.plane_api_key, workspace=cfg.plane_workspace_slug,
                                      oauth_token=cfg.claude_oauth_token, github_org=cfg.github_org,
-                                     mcp_python=cfg.mcp_python, model=cfg.claude_model)  # fmt: skip
+                                     mcp_python=cfg.mcp_python, model=cfg.claude_model, nr_key_file=cfg.nr_key_file,
+                                     nr_account_id=cfg.nr_account_id, nr_region=cfg.nr_region)  # fmt: skip
         catcher.brainstorm = Brainstorm(catcher, bs_runner)
         bs_runner.on_result = lambda feature, result, err: catcher.usage.record(
             feature, result, ok=bool(result) and not result.get("is_error"), error=err

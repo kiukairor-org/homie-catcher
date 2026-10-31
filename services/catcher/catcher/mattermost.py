@@ -62,13 +62,24 @@ class Mattermost:
     async def restore_channel(self, channel_id: str) -> None:
         await self._req("POST", f"/channels/{channel_id}/restore")
 
-    async def post(self, channel_id: str, message: str, *, root_id: str | None = None, attachments: list | None = None) -> dict:
+    async def post(self, channel_id: str, message: str, *, root_id: str | None = None, attachments: list | None = None,
+                   props: dict | None = None) -> dict:  # fmt: skip
         body: dict[str, Any] = {"channel_id": channel_id, "message": message}
         if root_id:
             body["root_id"] = root_id
-        if attachments:
-            body["props"] = {"attachments": attachments}
+        if attachments or props:
+            body["props"] = {**(props or {}), **({"attachments": attachments} if attachments else {})}
         return await self._req("POST", "/posts", body)
+
+    async def thread(self, post_id: str) -> list[dict]:
+        """All posts of the thread containing ``post_id`` (root first), oldest to newest."""
+        body = await self._req("GET", f"/posts/{post_id}/thread")
+        posts = (body or {}).get("posts") or {}
+        order = [pid for pid in (body or {}).get("order") or [] if pid in posts] or list(posts)
+        return sorted((posts[pid] for pid in order), key=lambda p: (p.get("create_at") or 0, p.get("id") or ""))
+
+    async def user(self, user_id: str) -> dict:
+        return await self._req("GET", f"/users/{user_id}")
 
     async def patch_post(self, post_id: str, message: str, attachments: list | None = None) -> dict:
         body: dict[str, Any] = {"message": message}

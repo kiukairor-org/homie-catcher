@@ -50,6 +50,9 @@ class Config:
     mm_public_url: str = "https://chat.tail8e3e5b.ts.net"  # MM_PUBLIC_URL: for thread permalinks
     mcp_python: str = "/opt/plane-mcp/bin/python"  # MCP_PYTHON: runs the read-only GitHub MCP server
     app_channels: bool = True  # APP_CHANNELS: one ~<repo> channel per app
+    nr_key_file: str = "/secrets/newrelic/NEW_RELIC_API_KEY"  # NR_KEY_FILE: user key file for the verify tools (D74)
+    nr_account_id: str = ""  # NEW_RELIC_ACCOUNT_ID
+    nr_region: str = "EU"  # NEW_RELIC_REGION
     listen_port: int = 8080
 
     @classmethod
@@ -107,6 +110,9 @@ class Config:
             mm_public_url=env.get("MM_PUBLIC_URL", "https://chat.tail8e3e5b.ts.net").strip().rstrip("/"),
             app_channels=env.get("APP_CHANNELS", "true").strip().lower() not in ("0", "false", "no", "off"),
             mcp_python=env.get("MCP_PYTHON", "/opt/plane-mcp/bin/python").strip() or "/opt/plane-mcp/bin/python",
+            nr_key_file=env.get("NR_KEY_FILE", "/secrets/newrelic/NEW_RELIC_API_KEY").strip(),
+            nr_account_id=env.get("NEW_RELIC_ACCOUNT_ID", "").strip(),
+            nr_region=(env.get("NEW_RELIC_REGION", "EU").strip().upper() or "EU"),
         )
 
     def secret_values(self) -> list[str]:

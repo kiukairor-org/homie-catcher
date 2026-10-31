@@ -36,13 +36,23 @@ BUILTIN_TOOLS = ("WebSearch", "WebFetch")
 DENIED_BUILTINS = ("Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "Task", "TodoWrite")
 # The MCP server file ships in the image next to the catcher package.
 GITHUB_RO_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "github_ro_mcp.py")
+# D74: read-only verification tools for an app channel ~<repo>, scoped to that one repo.
+VERIFY_SERVER = "verify"
+VERIFY_TOOLS = ("list_pull_requests", "get_pull_request", "list_workflow_runs", "get_checks", "commit_included",
+                "deploy_status", "newrelic_summary")  # fmt: skip
+VERIFY_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verify_ro_mcp.py")
+VERIFY_MAX_TURNS = 16  # an evidence check needs several tool calls
 
 
-def allowed_tools() -> list[str]:
-    return [*BUILTIN_TOOLS, *plane_mcp_tools.allowed_tool_names(), *(f"mcp__{GITHUB_RO_SERVER}__{t}" for t in GITHUB_RO_TOOLS)]
+def allowed_tools(verify: bool = False) -> list[str]:
+    tools = [*BUILTIN_TOOLS, *plane_mcp_tools.allowed_tool_names(), *(f"mcp__{GITHUB_RO_SERVER}__{t}" for t in GITHUB_RO_TOOLS)]
+    if verify:
+        tools += [f"mcp__{VERIFY_SERVER}__{t}" for t in VERIFY_TOOLS]
+    return tools
 
 
-def build_argv(claude_bin: str, mcp_path: str, system_prompt: str, schema: dict, max_turns: int, model: str | None) -> list[str]:
+def build_argv(claude_bin: str, mcp_path: str, system_prompt: str, schema: dict, max_turns: int, model: str | None,
+               verify: bool = False) -> list[str]:  # fmt: skip
     argv = [
         claude_bin,
         "-p",
@@ -53,7 +63,7 @@ def build_argv(claude_bin: str, mcp_path: str, system_prompt: str, schema: dict,
         "--strict-mcp-config",
         "--mcp-config", mcp_path,
         "--tools", ",".join(BUILTIN_TOOLS),
-        "--allowedTools", ",".join(allowed_tools()),
+        "--allowedTools", ",".join(allowed_tools(verify)),
         "--disallowedTools", ",".join([*DENIED_BUILTINS, *plane_mcp_tools.denied_tool_names()]),
         "--permission-mode", "dontAsk",
         "--permission-prompts", "none",
@@ -115,7 +125,8 @@ def parse_stream(stdout: bytes, returncode: int | None) -> tuple[Any, list[str]]
 
 class BrainstormRunner:
     def __init__(self, *, claude_bin: str, plane_mcp_bin: str, plane_base_url: str, plane_api_key: str, workspace: str,
-                 oauth_token: str, github_org: str, mcp_python: str, model: str | None = None) -> None:  # fmt: skip
+                 oauth_token: str, github_org: str, mcp_python: str, model: str | None = None,
+                 nr_key_file: str = "", nr_account_id: str = "", nr_region: str = "EU") -> None:  # fmt: skip
         self.claude_bin = claude_bin
         self._plane = build_mcp_config(
             plane_mcp_bin=plane_mcp_bin, plane_base_url=plane_base_url, plane_api_key=plane_api_key, workspace=workspace
@@ -124,9 +135,10 @@ class BrainstormRunner:
         self.github_org = github_org
         self.mcp_python = mcp_python
         self.model = model
+        self.nr = {"NR_KEY_FILE": nr_key_file, "NEW_RELIC_ACCOUNT_ID": nr_account_id, "NEW_RELIC_REGION": nr_region}
         self.on_result: Any = None  # usage meter hook: (feature, result dict | None, error text | None)
 
-    def mcp_config(self, github_token: str, repos: list[str]) -> dict:
+    def mcp_config(self, github_token: str, repos: list[str], verify_repo: str | None = None, verify_token: str | None = None) -> dict:
         cfg = json.loads(json.dumps(self._plane))
         cfg["mcpServers"][GITHUB_RO_SERVER] = {
             "type": "stdio",
@@ -134,19 +146,28 @@ class BrainstormRunner:
             "args": [GITHUB_RO_SCRIPT],
             "env": {"GITHUB_TOKEN": github_token, "GITHUB_ORG": self.github_org, "ALLOWED_REPOS": ",".join(repos)},
         }
+        if verify_repo and verify_token:
+            cfg["mcpServers"][VERIFY_SERVER] = {
+                "type": "stdio",
+                "command": self.mcp_python,
+                "args": [VERIFY_SCRIPT],
+                # the NR key stays in its mounted file: only its path is passed
+                "env": {"GITHUB_TOKEN": verify_token, "GITHUB_ORG": self.github_org, "REPO": verify_repo, **self.nr},
+            }
         return cfg
 
     async def run(self, *, system_prompt: str, text: str, images: list[tuple[str, str]], schema: dict, max_turns: int,
-                  github_token: str, repos: list[str], feature: str = "brainstorm") -> tuple[Any, list[str]]:  # fmt: skip
+                  github_token: str, repos: list[str], feature: str = "brainstorm", verify_repo: str | None = None,
+                  verify_token: str | None = None) -> tuple[Any, list[str]]:  # fmt: skip
         workdir = tempfile.mkdtemp(prefix="catcher-bs-")  # empty cwd: no CLAUDE.md, no project settings
         try:
             os.chmod(workdir, 0o700)
             cfg_path = os.path.join(workdir, "mcp.json")
             fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w") as fh:
-                json.dump(self.mcp_config(github_token, repos), fh)
+                json.dump(self.mcp_config(github_token, repos, verify_repo, verify_token), fh)
             proc = await asyncio.create_subprocess_exec(
-                *build_argv(self.claude_bin, cfg_path, system_prompt, schema, max_turns, self.model),
+                *build_argv(self.claude_bin, cfg_path, system_prompt, schema, max_turns, self.model, bool(verify_repo and verify_token)),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

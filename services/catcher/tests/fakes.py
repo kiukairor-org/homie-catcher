@@ -109,6 +109,7 @@ class FakeServices:
         self.reviews: dict[int, list[dict]] = {}
         self.comments: dict[int, list[dict]] = {}
         self.check_runs: dict[str, list[dict]] = {}
+        self.mm_users: dict[str, dict] = {}  # Mattermost user id -> {"username", "is_bot"}
         self._seq = itertools.count(1)
 
     # writes by service, excluding Mattermost chat traffic
@@ -166,8 +167,18 @@ class FakeServices:
         m = re.match(r"^/api/v4/files/([^/]+)/info$", path)
         if m and m.group(1) in self.files:
             return Response(200, self.files[m.group(1)]["info"])
+        m = re.match(r"^/api/v4/posts/([^/]+)/thread$", path)
+        if m and method == "GET":
+            root = next((p.get("root_id") or p["id"] for p in self.posts if p["id"] == m.group(1)), m.group(1))
+            posts = {p["id"]: p for p in self.posts if p["id"] == root or p.get("root_id") == root}
+            return Response(200, {"order": list(posts), "posts": posts})
+        m = re.match(r"^/api/v4/users/([^/]+)$", path)
+        if m and method == "GET":
+            u = self.mm_users.get(m.group(1))
+            return Response(200, {"id": m.group(1), **u}) if u else Response(404, {"message": "not found"})
         if path == "/api/v4/posts" and method == "POST":
-            post = {"id": f"post{next(self._seq)}", **body}
+            seq = next(self._seq)
+            post = {"id": f"post{seq}", "user_id": BOT, "create_at": 1_800_000_000_000 + seq * 1000, **body}
             self.posts.append(post)
             return Response(201, post)
         m = re.match(r"^/api/v4/posts/([^/]+)/patch$", path)
