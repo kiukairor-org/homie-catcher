@@ -262,7 +262,8 @@ def test_sre_tool_guards(monkeypatch, tmp_path):
     with pytest.raises(sre_mcp.ToolError):
         sre_mcp.scan_secrets("contains supersecretvalue123", known=("supersecretvalue123",))
     monkeypatch.setattr(sre_mcp, "MODE", "alert")
-    for call in (lambda: sre_mcp.open_fix_pr("t" * 10, "s", [{"path": "a", "content": "b"}]), lambda: sre_mcp.open_revert_pr("abcdef1", "r"),
+    for call in (lambda: sre_mcp.open_fix_pr("t" * 10, "s", [{"path": "a", "old_string": "b", "new_string": "c"}]),
+                 lambda: sre_mcp.open_revert_pr("abcdef1", "r"),
                  lambda: sre_mcp.restart_deployment()):  # fmt: skip
         with pytest.raises(sre_mcp.ToolError):
             call()
@@ -271,7 +272,7 @@ def test_sre_tool_guards(monkeypatch, tmp_path):
         sre_mcp.restart_deployment()
     sre_mcp.record_action("fix_pr", url="u")
     with pytest.raises(sre_mcp.ToolError, match="already opened a PR"):
-        sre_mcp.open_fix_pr("a fix title", "s", [{"path": "a", "content": "b"}])
+        sre_mcp.open_fix_pr("a fix title", "s", [{"path": "a", "old_string": "b", "new_string": "c"}])
 
 
 def test_sre_job_has_no_builtin_tools_only_sre_mcp():
@@ -281,3 +282,25 @@ def test_sre_job_has_no_builtin_tools_only_sre_mcp():
     assert allowed and all(t.startswith("mcp__sre__") for t in allowed)
     assert argv[argv.index("--max-turns") + 1] == "40" and "--strict-mcp-config" in argv
     assert "UNTRUSTED" in sre_job.SYSTEM and "INVESTIGATE ONLY" in sre_job.MODE_RULES["alert"]
+
+
+def test_fix_edits_refuse_placeholders_and_file_wipes():
+    app = "function sync() {\n  try { await fetch('/api/sync') } catch (e) { setStatus('Offline'); }\n}\n" + "// filler line\n" * 60
+    cur = {"web/app.js": app}
+    ok = sre_mcp.apply_edits(cur, [{"path": "web/app.js", "old_string": "catch (e) { setStatus('Offline'); }",
+                                    "new_string": "catch (e) { console.error(e); setStatus('Sync error: ' + e.message); }"}], [])  # fmt: skip
+    assert "Sync error" in ok["web/app.js"] and ok["web/app.js"].count("filler") == 60
+    bad = [
+        ([{"path": "web/app.js", "old_string": app, "new_string": "PLACEHOLDER"}], []),  # the houss PR #15 failure
+        ([{"path": "web/app.js", "old_string": "// filler line\n" * 60, "new_string": ""}], []),  # wipes most of the file
+        ([{"path": "web/app.js", "old_string": "// filler line", "new_string": "x"}], []),  # not unique
+        ([{"path": "web/app.js", "old_string": "nope", "new_string": "x"}], []),  # not found
+        ([{"path": "web/missing.js", "old_string": "a", "new_string": "b"}], []),
+        ([], [{"path": "web/app.js", "content": "overwrite"}]),  # existing file via new_files
+        ([], [{"path": "web/new.js", "content": "// ... rest of the file unchanged"}]),
+        ([{"path": ".github/workflows/ci.yml", "old_string": "a", "new_string": "b"}], []),
+    ]
+    for edits, new_files in bad:
+        with pytest.raises(sre_mcp.ToolError):
+            sre_mcp.apply_edits(cur, edits, new_files)
+    assert "preview_fix" in sre_job.TOOLS

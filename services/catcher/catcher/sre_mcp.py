@@ -445,26 +445,97 @@ def _known() -> tuple[str, ...]:
     return tuple(out)
 
 
+_PLACEHOLDER = re.compile(
+    r"PLACEHOLDER|\.\.\.\s*(rest|remaining|existing|unchanged)|(rest of|remaining|existing) (the )?(file|code)( is)? unchanged|"
+    r"<(full|entire|complete) (new )?(file|content)>|TODO: ?(full|insert) (file|content)",
+    re.I,
+)
+
+
+def apply_edits(current: dict[str, str], edits: list, new_files: list) -> dict[str, str]:
+    """Pure: the resulting content of every touched file. edits = [{path, old_string, new_string}] applied in order to
+    the files' content on main (old_string must occur exactly once); new_files = [{path, content}] for files that do not
+    exist yet. Refuses placeholders and changes that wipe out most of an existing file."""
+    if not isinstance(edits, list) or not isinstance(new_files, list) or not (edits or new_files):
+        raise ToolError("give edits [{path, old_string, new_string}] and/or new_files [{path, content}]")
+    if len(edits) > 30 or len(new_files) > 5:
+        raise ToolError("at most 30 edits and 5 new files")
+    paths = [e.get("path") if isinstance(e, dict) else None for e in edits] + [
+        f.get("path") if isinstance(f, dict) else None for f in new_files
+    ]
+    check_pr_files([{"path": p, "content": ""} for p in paths], [])
+    out: dict[str, str] = {}
+    for e in edits:
+        p, old, new = e["path"], e.get("old_string"), e.get("new_string")
+        if not isinstance(old, str) or not old or not isinstance(new, str):
+            raise ToolError(f"{p}: old_string (non-empty) and new_string are required")
+        if p not in current:
+            raise ToolError(f"{p}: not found on main (use new_files for new files)")
+        text = out.get(p, current[p])
+        if text.count(old) != 1:
+            raise ToolError(f"{p}: old_string must occur exactly once (found {text.count(old)}); copy it exactly from read_file")
+        if _PLACEHOLDER.search(new) and not _PLACEHOLDER.search(old):
+            raise ToolError(f"{p}: new_string looks like a placeholder; write the real code")
+        out[p] = text.replace(old, new)
+    for f in new_files:
+        p, content = f["path"], f.get("content")
+        if p in current:
+            raise ToolError(f"{p}: exists on main; change it with edits")
+        if not isinstance(content, str) or not content.strip() or _PLACEHOLDER.search(content) or len(content) > 200_000:
+            raise ToolError(f"{p}: new file needs its real, complete content")
+        out[p] = content
+    for p, text in out.items():
+        before = current.get(p)
+        if before and len(before) > 400 and len(text) < 0.5 * len(before):
+            raise ToolError(f"{p}: the change would remove more than half of the file; make targeted edits instead")
+    return out
+
+
+def _main_files(edits: list) -> dict[str, str]:
+    cur: dict[str, str] = {}
+    for p in {e.get("path") for e in edits if isinstance(e, dict) and isinstance(e.get("path"), str)}:
+        try:
+            cur[p] = read_file(p)
+        except ToolError:
+            continue
+    return cur
+
+
 @mcp.tool()
-def open_fix_pr(title: str, summary: str, files: list, delete_paths: list | None = None) -> dict:
-    """Open ONE pull request with a code/config fix. files: [{"path": "...", "content": "<full new file>"}].
-    summary: what was wrong and what the change does (no log excerpts with user data, no secrets).
-    Normal CI, reviewer, auto-merge and escalation rules apply. Owner-ordered runs only."""
+def preview_fix(edits: list, new_files: list | None = None) -> str:
+    """Dry run of open_fix_pr: apply the edits to main in memory and return the unified diff (nothing is written).
+    Use it before open_fix_pr: you only get ONE PR per run."""
+    import difflib
+
+    new_files = new_files or []
+    cur = _main_files(edits)
+    out = apply_edits(cur, edits, new_files)
+    diff = []
+    for p, text in out.items():
+        diff += difflib.unified_diff(cur.get(p, "").splitlines(True), text.splitlines(True), f"a/{p}", f"b/{p}")
+    return "".join(diff)[:MAX_OUT] or "(no change)"
+
+
+@mcp.tool()
+def open_fix_pr(title: str, summary: str, edits: list, new_files: list | None = None) -> dict:
+    """Open ONE pull request with a code/config fix. edits: [{"path": "web/app.js", "old_string": "<exact text on
+    main, unique>", "new_string": "<replacement>"}] (like an editor's search/replace); new_files: [{"path", "content"}]
+    only for files that do not exist. Run preview_fix first. summary: what was wrong and what the change does (no log
+    excerpts with user data, no secrets). Normal CI, reviewer, auto-merge and escalation rules apply. Owner-ordered
+    runs only."""
     _owner_run()
-    delete_paths = delete_paths or []
-    check_pr_files(files, delete_paths)
+    new_files = new_files or []
     title = " ".join(str(title).split())[:120]
     if len(title) < 5:
         raise ToolError("title too short")
-    scan_secrets(title, summary, *(f["content"] for f in files), known=_known())
+    out = apply_edits(_main_files(edits), edits, new_files)
+    scan_secrets(title, summary, *out.values(), known=_known())
     branch = _branch("fix")
     msg = f"fix: {title}"
-    for f in files:
-        _put(branch, f["path"], f["content"], msg)
-    for p in delete_paths:
-        _put(branch, p, None, msg)
+    for p, text in out.items():
+        _put(branch, p, text, msg)
     pr = _gh("POST", "/pulls", {"title": title, "head": branch, "base": "main", "body": _pr_body(summary)})
-    record_action("fix_pr", url=pr.get("html_url"), number=pr.get("number"), branch=branch, files=[f["path"] for f in files] + delete_paths)
+    record_action("fix_pr", url=pr.get("html_url"), number=pr.get("number"), branch=branch, files=sorted(out))
     return {"url": pr.get("html_url"), "number": pr.get("number")}
 
 

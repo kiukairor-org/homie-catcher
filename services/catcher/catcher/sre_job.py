@@ -24,7 +24,7 @@ from .claude_runner import child_env
 
 SERVER = "sre"
 TOOLS = ("k8s_list", "k8s_get", "pod_logs", "argo_status", "http_get", "nrql", "list_commits", "get_commit",
-         "list_pull_requests", "get_pull_request", "list_dir", "read_file", "open_fix_pr", "open_revert_pr", "restart_deployment")  # fmt: skip # noqa: E501
+         "list_pull_requests", "get_pull_request", "list_dir", "read_file", "preview_fix", "open_fix_pr", "open_revert_pr", "restart_deployment")  # fmt: skip # noqa: E501
 MCP_PYTHON = os.environ.get("MCP_PYTHON", "/opt/plane-mcp/bin/python")
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sre_mcp.py")
 PASS_ENV = ("REPO", "MODE", "RUN_ID", "THREAD_LINK", "ISSUE_NUMBER", "GITHUB_ORG", "GITHUB_TOKEN_FILE", "NR_KEY_FILE",
@@ -81,6 +81,9 @@ METHOD: state of the deployment (argo_status, k8s_list pods/events, deployments)
 crashes; nrql FROM Log / FROM Span errors since the last deploy), the code path involved (read_file, recent
 commits/PRs), live probes (http_get). Form a hypothesis and confirm it with evidence before concluding. Keep it
 efficient: you have a limited number of turns.
+
+FIX PRs: change code with small targeted edits (open_fix_pr edits = exact search/replace on main; copy old_string from
+read_file). ALWAYS call preview_fix with the same edits first and check the diff: you get ONE PR per run.
 
 {mode_rules}
 
