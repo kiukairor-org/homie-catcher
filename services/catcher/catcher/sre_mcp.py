@@ -435,6 +435,20 @@ def _put(branch: str, path: str, content: str | None, message: str) -> None:
     _gh("PUT", f"/contents/{urllib.parse.quote(path)}", body)
 
 
+def _auto_merge(pr: dict) -> bool:
+    """Same as claude.yml's `gh pr merge --auto --squash`: merges only after CI + reviewer approval (branch protection);
+    review.yml turns it off again when it escalates to a human."""
+    q = "mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}"
+    headers = {"Authorization": f"bearer {_read(GH_TOKEN_FILE)}", "Content-Type": "application/json", "User-Agent": "homie-sre"}
+    try:
+        status, body, _ = _http(
+            "https://api.github.com/graphql", headers, "POST", json.dumps({"query": q, "variables": {"id": pr.get("node_id")}}).encode()
+        )
+    except ToolError:
+        return False
+    return status == 200 and isinstance(body, dict) and not body.get("errors")
+
+
 def _known() -> tuple[str, ...]:
     out = []
     for f in (GH_TOKEN_FILE, NR_KEY_FILE):
@@ -535,7 +549,7 @@ def open_fix_pr(title: str, summary: str, edits: list, new_files: list | None = 
     for p, text in out.items():
         _put(branch, p, text, msg)
     pr = _gh("POST", "/pulls", {"title": title, "head": branch, "base": "main", "body": _pr_body(summary)})
-    record_action("fix_pr", url=pr.get("html_url"), number=pr.get("number"), branch=branch, files=sorted(out))
+    record_action("fix_pr", url=pr.get("html_url"), number=pr.get("number"), branch=branch, files=sorted(out), auto_merge=_auto_merge(pr))
     return {"url": pr.get("html_url"), "number": pr.get("number")}
 
 
@@ -571,7 +585,7 @@ def open_revert_pr(commit_sha: str, reason: str) -> dict:
             _put(branch, name, None, msg)
     title = f"Revert {commit_sha[:7]} ({' '.join((c.get('commit') or {}).get('message', '').split())[:60]})"
     pr = _gh("POST", "/pulls", {"title": title, "head": branch, "base": "main", "body": _pr_body(f"Rollback: {reason}")})
-    record_action("revert_pr", url=pr.get("html_url"), number=pr.get("number"), commit=commit_sha)
+    record_action("revert_pr", url=pr.get("html_url"), number=pr.get("number"), commit=commit_sha, auto_merge=_auto_merge(pr))
     return {"url": pr.get("html_url"), "number": pr.get("number")}
 
 

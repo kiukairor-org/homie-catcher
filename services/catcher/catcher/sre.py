@@ -87,7 +87,8 @@ def findings_markdown(run_id: str, out: dict | None, mode: str) -> str:
     for a in acts:
         if a.get("action") in ("fix_pr", "revert_pr"):
             kind = "Fix PR" if a["action"] == "fix_pr" else "Revert PR (rollback)"
-            act_lines.append(f"- 🔧 {kind} opened: {a.get('url')}")
+            note = "" if a.get("auto_merge", True) else " (⚠️ auto-merge could not be enabled: merge needs a human)"
+            act_lines.append(f"- 🔧 {kind} opened: {a.get('url')}{note}")
         elif a.get("action") == "restart":
             act_lines.append(f"- 🔄 Rollout restart of `{a.get('deployment')}` at {a.get('at')}")
     if act_lines:

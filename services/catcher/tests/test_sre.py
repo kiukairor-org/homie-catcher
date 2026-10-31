@@ -304,3 +304,10 @@ def test_fix_edits_refuse_placeholders_and_file_wipes():
         with pytest.raises(sre_mcp.ToolError):
             sre_mcp.apply_edits(cur, edits, new_files)
     assert "preview_fix" in sre_job.TOOLS
+
+
+def test_fix_pr_without_auto_merge_is_flagged():
+    out = parse_result(result_line([{"action": "fix_pr", "url": "https://github.com/kiukairor-org/houss/pull/9", "auto_merge": False}]))
+    assert "auto-merge could not be enabled" in findings_markdown("r", out, "owner")
+    ok = parse_result(result_line([{"action": "fix_pr", "url": "https://github.com/kiukairor-org/houss/pull/9", "auto_merge": True}]))
+    assert "auto-merge could not" not in findings_markdown("r", ok, "owner")
