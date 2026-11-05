@@ -160,6 +160,7 @@ class BrainstormRunner:
                   github_token: str, repos: list[str], feature: str = "brainstorm", verify_repo: str | None = None,
                   verify_token: str | None = None) -> tuple[Any, list[str]]:  # fmt: skip
         workdir = tempfile.mkdtemp(prefix="catcher-bs-")  # empty cwd: no CLAUDE.md, no project settings
+        home = tempfile.mkdtemp(prefix="catcher-home-")  # fresh HOME per run (D80: spans; see child_env)
         try:
             os.chmod(workdir, 0o700)
             cfg_path = os.path.join(workdir, "mcp.json")
@@ -172,7 +173,7 @@ class BrainstormRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workdir,
-                env=child_env(self._token),
+                env=child_env(self._token, home),
             )
             try:
                 out, err = await asyncio.wait_for(proc.communicate(user_message(text, images)), RUN_TIMEOUT_S)
@@ -187,3 +188,4 @@ class BrainstormRunner:
             return parse_stream(out, proc.returncode)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+            shutil.rmtree(home, ignore_errors=True)

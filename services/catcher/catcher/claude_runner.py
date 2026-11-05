@@ -155,11 +155,16 @@ def build_argv(claude_bin: str, mcp_config_path: str, model: str | None = None) 
     return argv
 
 
-def child_env(oauth_token: str) -> dict[str, str]:
-    """Minimal environment: no Plane/GitHub/Mattermost secrets reach the claude process."""
+def child_env(oauth_token: str, home: str | None = None) -> dict[str, str]:
+    """Minimal environment: no Plane/GitHub/Mattermost secrets reach the claude process.
+
+    ``home``: a fresh per-run HOME (D80). Claude Code 2.1.312 caches managed settings under ~/.claude
+    (policy-limits.json + remote-settings.json); once BOTH caches exist it stops exporting OpenTelemetry spans
+    (logs/metrics unaffected). Measured 2026-11-05: 0/3 runs with the caches, 3/3 with either removed or a fresh
+    HOME. The CLI still fetches and enforces the policy at every start; it just has no stale cache."""
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/tmp"),
+        "HOME": home or os.environ.get("HOME", "/tmp"),
         "LANG": "C.UTF-8",
         "CLAUDE_CODE_OAUTH_TOKEN": oauth_token,
         "DISABLE_AUTOUPDATER": "1",
@@ -188,6 +193,7 @@ class ClaudeRunner:
     async def run(self, prompt: str) -> Any:
         """Returns Claude's ``structured_output`` (not yet validated by us)."""
         workdir = tempfile.mkdtemp(prefix="catcher-run-")  # empty cwd: no CLAUDE.md, no project settings
+        home = tempfile.mkdtemp(prefix="catcher-home-")  # fresh HOME per run (D80: spans; see child_env)
         try:
             os.chmod(workdir, 0o700)
             cfg_path = os.path.join(workdir, "mcp.json")
@@ -200,7 +206,7 @@ class ClaudeRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workdir,
-                env=child_env(self._token),
+                env=child_env(self._token, home),
             )
             try:
                 out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), RUN_TIMEOUT_S)
@@ -219,6 +225,7 @@ class ClaudeRunner:
             return parse_result(out, proc.returncode)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+            shutil.rmtree(home, ignore_errors=True)
 
 
 def parse_result(stdout: bytes, returncode: int | None) -> Any:

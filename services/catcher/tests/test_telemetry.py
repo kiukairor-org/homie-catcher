@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 from catcher.poller import Poller, prod_version_url
 from catcher.telemetry import Telemetry, item_root_span_id, item_trace_id, run_span_id
@@ -402,3 +403,29 @@ def test_issue_body_carries_the_item_traceparent():
         assert f"<!-- homie-trace 00-{item_trace_id(iid)}-{item_root_span_id(iid)}-01 -->" in issue["body"]
 
     asyncio.run(go())
+
+
+def test_each_claude_run_gets_a_fresh_home(monkeypatch, tmp_path):
+    """D80: Claude Code stops exporting spans once ~/.claude holds cached managed settings."""
+    from catcher.claude_runner import ClaudeRunner, child_env
+
+    assert child_env("t", "/tmp/h1")["HOME"] == "/tmp/h1"
+    seen = []
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self, _inp):
+            return b'{"structured_output": {}}', b""
+
+    async def fake_exec(*argv, env, cwd, **kw):
+        seen.append((env["HOME"], cwd))
+        assert os.path.isdir(env["HOME"]) and env["HOME"] != os.environ.get("HOME")
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    r = ClaudeRunner(claude_bin="claude", plane_mcp_bin="x", plane_base_url="http://p", plane_api_key="k", workspace="w", oauth_token="t")
+    for _ in range(2):
+        asyncio.run(r.run("hi"))
+    (h1, c1), (h2, c2) = seen
+    assert h1 != h2 and not os.path.exists(h1) and not os.path.exists(h2)  # fresh and cleaned up
