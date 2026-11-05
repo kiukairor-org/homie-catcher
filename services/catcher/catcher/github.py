@@ -98,6 +98,8 @@ ENDPOINTS: tuple[Endpoint, ...] = (
     Endpoint("GET", "/repos/{owner}/{repo}/pulls/{number}/reviews"),
     Endpoint("GET", "/repos/{owner}/{repo}/issues/{number}/comments"),
     Endpoint("GET", "/repos/{owner}/{repo}/commits/{sha}/check-runs"),
+    Endpoint("GET", "/repos/{owner}/{repo}/actions/runs"),  # D80 telemetry: public repos, no extra permission
+    Endpoint("GET", "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs"),
     Endpoint("GET", "/repos/{owner}/{repo}/topics"),
     Endpoint("GET", "/repos/{owner}/{repo}/contents"),
     Endpoint("GET", "/repos/{owner}/{repo}/contents/{name}"),

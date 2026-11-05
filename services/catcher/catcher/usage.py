@@ -79,6 +79,13 @@ def _periods(ts: float) -> tuple[str, str]:
     return d.strftime("%Y-%m-%d"), f"{iso[0]}-W{iso[1]:02d}"
 
 
+def _iso_epoch(value: Any) -> float | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() if value else None
+    except ValueError:
+        return None
+
+
 def detect_limit(result: dict | None, text: str | None, now: float) -> float | None:
     """Reset time (epoch) if this run hit a real usage limit, else None."""
     blob = " ".join(str(x) for x in ((result or {}).get("result"), (result or {}).get("terminal_reason"), text) if x)
@@ -144,18 +151,21 @@ class Usage:
 
     # ------------------------------------------------------------- meter
     def record(self, feature: str, result: dict | None, *, ok: bool, source: str = "catcher", repo: str | None = None,
-               ref: str | None = None, error: str | None = None) -> None:  # fmt: skip
+               ref: str | None = None, error: str | None = None, ctx: dict | None = None) -> None:  # fmt: skip
         now = self.c.clock()
         r = result or {}
         u = r.get("usage") or {}
         day, week = _periods(now)
-        self._x(
+        cur = self._x(
             "INSERT OR IGNORE INTO claude_usage(ts, day, week, feature, source, repo, ref, cost_usd, input_tokens, output_tokens,"
             " cache_read, cache_creation, duration_ms, num_turns, ok, error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (now, day, week, feature, source, repo, ref, float(r.get("total_cost_usd") or 0), u.get("input_tokens"),
              u.get("output_tokens"), u.get("cache_read_input_tokens"), u.get("cache_creation_input_tokens"),
              r.get("duration_ms"), r.get("num_turns"), 1 if ok else 0, (error or "")[:300] or None),
         )  # fmt: skip
+        telemetry = getattr(self.c, "telemetry", None)
+        if telemetry is not None and (ref is None or cur.rowcount == 1):  # D80: once per run (GitHub comments are re-read)
+            telemetry.on_claude(feature, result, ok=ok, error=error, source=source, repo=repo, ctx=ctx)
         reset = detect_limit(result, error, now)
         if reset:
             self.set_limit(reset, f"{feature} run reported a usage limit")
@@ -334,7 +344,8 @@ class Usage:
                               "usage": {"input_tokens": d.get("in"), "output_tokens": d.get("out"),
                                         "cache_read_input_tokens": d.get("cr"), "cache_creation_input_tokens": d.get("cc")}}  # fmt: skip
                     self.record(GHA_FEATURES.get(str(d.get("wf")), "gha"), result, ok=not d.get("err"), source="gha",
-                                repo=repo, ref=f"gh:{repo}:{cm.get('id')}")  # fmt: skip
+                                repo=repo, ref=f"gh:{repo}:{cm.get('id')}",
+                                ctx={"number": num, "run_id": d.get("run"), "ts": _iso_epoch(cm.get("created_at"))})  # fmt: skip
                     n += 1
                 elif _SKIP_MARK in body and num:
                     self._once(f"skip:{repo}:{num}:{cm.get('id')}", {"repo": repo, "issue": num, "retried": False})

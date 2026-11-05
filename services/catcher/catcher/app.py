@@ -23,6 +23,7 @@ from .mattermost import Mattermost
 from .plane import Plane
 from .poller import Poller
 from .sre import SreManager
+from .telemetry import Telemetry
 from .transport import AiohttpTransport
 
 log = logging.getLogger(__name__)
@@ -93,8 +94,13 @@ async def main() -> None:
         bs_runner.on_result = lambda feature, result, err: catcher.usage.record(
             feature, result, ok=bool(result) and not result.get("is_error"), error=err
         )
-        if cfg.sre_image and os.path.exists(os.path.join(SA_DIR, "token")):  # D75: SRE agent Jobs in namespace sre
+        has_sa = os.path.exists(os.path.join(SA_DIR, "token"))
+        if cfg.sre_image and has_sa:  # D75: SRE agent Jobs in namespace sre
             catcher.sre = SreManager(catcher, K8s(session))
+        # D80: pipeline telemetry -> in-cluster collector -> New Relic (off when the endpoint is unset)
+        catcher.telemetry = Telemetry(catcher, transport, endpoint=os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"),
+                                      nr_key_file=cfg.nr_key_file, nr_account_id=cfg.nr_account_id, nr_region=cfg.nr_region,
+                                      k8s=K8s(session) if has_sa else None)  # fmt: skip
         await catcher.startup()
         if catcher.sre is not None:
             catcher.sre.resume()
@@ -108,6 +114,7 @@ async def main() -> None:
                 mm.listen(session, catcher.on_event),
                 catcher.worker_loop(),
                 Poller(catcher).loop(cfg.poll_interval_s),
+                catcher.telemetry.loop(),
             )
         finally:
             await runner.cleanup()

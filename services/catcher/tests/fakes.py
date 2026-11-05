@@ -109,6 +109,8 @@ class FakeServices:
         self.reviews: dict[int, list[dict]] = {}
         self.comments: dict[int, list[dict]] = {}
         self.check_runs: dict[str, list[dict]] = {}
+        self.actions_runs: dict[str, list[dict]] = {}  # repo -> completed workflow runs (D80 telemetry)
+        self.actions_jobs: dict[int, list[dict]] = {}  # run id -> jobs with steps
         self.mm_users: dict[str, dict] = {}  # Mattermost user id -> {"username", "is_bot"}
         self._seq = itertools.count(1)
 
@@ -340,6 +342,12 @@ class FakeServices:
         m = re.match(rf"^/repos/{ORG}/[^/]+/issues/(\d+)/comments$", path)
         if m:
             return Response(200, self.comments.get(int(m.group(1)), []), h)
+        m = re.match(rf"^/repos/{ORG}/([^/]+)/actions/runs$", path)
+        if m:
+            return Response(200, {"workflow_runs": self.actions_runs.get(m.group(1), [])}, h)
+        m = re.match(rf"^/repos/{ORG}/[^/]+/actions/runs/(\d+)/jobs$", path)
+        if m:
+            return Response(200, {"jobs": self.actions_jobs.get(int(m.group(1)), [])}, h)
         m = re.match(rf"^/repos/{ORG}/[^/]+/commits/([^/]+)/check-runs$", path)
         if m:
             return Response(200, {"check_runs": self.check_runs.get(m.group(1), [])}, h)

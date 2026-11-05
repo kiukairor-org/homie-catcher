@@ -38,6 +38,7 @@ from .routing import (
     valid_repo_name,
 )
 from .spec import Spec, SpecError, validate_spec
+from .telemetry import Telemetry, current_item
 from .text import NO_REPLY, YES_REPLY, clip, defang, issue_body, md_escape, spec_html, spec_markdown
 from .usage import Usage
 
@@ -75,6 +76,9 @@ class Catcher:
         claude.on_result = lambda feature, result, err: self.usage.record(
             feature, result, ok=bool(result) and not result.get("is_error"), error=err
         )
+        self.telemetry = Telemetry(self, None, endpoint=None)  # D80: replaced by the app when OTEL_EXPORTER_OTLP_ENDPOINT is set
+        db.on_transition = lambda iid, prev, new: self.telemetry.on_transition(iid, prev, new)
+        db.on_milestone = lambda iid, key: self.telemetry.on_milestone(iid, key)
 
     # ------------------------------------------------------------------ setup
     async def startup(self) -> None:
@@ -330,6 +334,13 @@ class Catcher:
 
     # ------------------------------------------------------- Claude + spec
     async def process_item(self, item_id: int) -> None:
+        token = current_item.set(item_id)  # D80: the spec run's telemetry joins this item's trace
+        try:
+            await self._process_item(item_id)
+        finally:
+            current_item.reset(token)
+
+    async def _process_item(self, item_id: int) -> None:
         if not self.db.transition(item_id, ["queued"], "running"):
             return
         item = self.db.item(item_id)

@@ -122,6 +122,9 @@ class DB:
         self._conn.executescript(SCHEMA)
         self._lock = threading.Lock()
         self.clock = clock
+        # Telemetry hooks (D80), set by the Catcher: (item_id, previous status, new status) / (item_id, milestone key)
+        self.on_transition: Callable[[int, str | None, str], None] | None = None
+        self.on_milestone: Callable[[int, str], None] | None = None
 
     def _x(self, sql: str, args: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -186,10 +189,13 @@ class DB:
         """Atomic compare-and-set on status: the basis of button idempotency."""
         froms = list(from_statuses)
         marks = ",".join("?" * len(froms))
+        prev = self._x("SELECT status FROM items WHERE id=?", (item_id,)).fetchone() if self.on_transition else None
         cur = self._x(
             f"UPDATE items SET status=?, updated_at=? WHERE id=? AND status IN ({marks})",  # noqa: S608 - only "?" marks
             (to_status, self.clock(), item_id, *froms),
         )
+        if cur.rowcount == 1 and self.on_transition:
+            self.on_transition(item_id, prev["status"] if prev else None, to_status)
         return cur.rowcount == 1
 
     def move_item(self, item_id: int, new_root: str) -> None:
@@ -275,6 +281,8 @@ class DB:
     def claim_milestone(self, item_id: int, key: str) -> bool:
         """True exactly once per (item, key)."""
         cur = self._x("INSERT OR IGNORE INTO milestones(item_id, key, announced_at) VALUES(?,?,?)", (item_id, key, self.clock()))
+        if cur.rowcount == 1 and self.on_milestone:
+            self.on_milestone(item_id, key)
         return cur.rowcount == 1
 
     def has_milestone(self, item_id: int, key: str) -> bool:

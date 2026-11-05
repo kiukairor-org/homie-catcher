@@ -58,6 +58,7 @@ class Poller:
                 self._ticks = getattr(self, "_ticks", 0) + 1
                 if self._ticks % 5 == 1:  # usage: GitHub Actions usage, warnings, status issue, retries
                     await self.c.usage.tick()
+                    await self.c.telemetry.tick()  # D80: workflow runs + Argo CD deploys -> New Relic
             except Exception:
                 log.exception("poll failed")
             await asyncio.sleep(interval)
@@ -87,6 +88,7 @@ class Poller:
         iid, repo, n = item["id"], item["repo"], pr["number"]
         sha = (pr.get("head") or {}).get("sha")
         self.db.upsert_pr(repo, n, iid, sha, pr.get("state", ""))
+        self.c.telemetry.map_pr(repo, pr, iid)  # D80: this PR's CI/review runs and its deploy join the item's trace
         url = pr.get("html_url", "")
 
         if self.db.claim_milestone(iid, f"pr{n}:opened"):

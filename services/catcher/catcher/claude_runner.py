@@ -35,6 +35,7 @@ from typing import Any
 
 from . import plane_mcp_tools
 from .spec import CLAUDE_SCHEMA
+from .telemetry import claude_otel_env
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +166,7 @@ def child_env(oauth_token: str) -> dict[str, str]:
         "DISABLE_UPDATES": "1",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     }
+    env.update(claude_otel_env())  # D80: only when OTEL_EXPORTER_OTLP_ENDPOINT is set (in-cluster collector, no key)
     return env
 
 
