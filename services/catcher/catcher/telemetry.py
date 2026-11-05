@@ -81,8 +81,19 @@ def claude_otel_env(endpoint: str | None = None) -> dict[str, str]:
     }
     item_id = current_item.get()
     if item_id is not None:
-        env["TRACEPARENT"] = f"00-{item_trace_id(item_id)}-{item_root_span_id(item_id)}-01"
+        env["TRACEPARENT"] = traceparent(item_id)
     return env
+
+
+def traceparent(item_id: int) -> str:
+    """W3C traceparent of an item's root span (sampled)."""
+    return f"00-{item_trace_id(item_id)}-{item_root_span_id(item_id)}-01"
+
+
+def trace_marker(item_id: int) -> str:
+    """Hidden marker in the item's GitHub issue: the workflows read it (.github/scripts/trace-context.sh) and pass it
+    to claude-code-action as TRACEPARENT, so the agent run joins the item's trace. A trace id is not a secret."""
+    return f"<!-- homie-trace {traceparent(item_id)} -->"
 
 
 def _h(*parts: Any) -> str:
