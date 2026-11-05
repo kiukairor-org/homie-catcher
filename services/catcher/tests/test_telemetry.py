@@ -151,7 +151,7 @@ def test_item_is_one_trace_from_post_to_deploy():
         assert run["cicd.pipeline.run.id"] == iid and run["trace.id"] == trace and run["ai-pipeline"] is True
         stages = rec.events("CicdStage")
         assert {e["stage.to"] for e in stages} >= {"running", "triage", "approved", "done", "opened", "merged", "deployed"}
-        (summary,) = rec.events("LlmChatCompletionSummary")
+        (summary,) = rec.events("CicdLlmRun")
         assert summary["vendor"] == "anthropic" and summary["response.usage.total_tokens"] == 150 and summary["trace_id"] == trace
         assert tel.lookup("merge", "cafef00d") == iid and tel.lookup("sha", "notes:deadbeef") == iid
         # terminal status reached again (e.g. a retry): the root is not emitted twice
@@ -257,12 +257,12 @@ def test_gha_usage_maps_run_to_item_and_is_counted_once():
         assert s["service"] == "github-actions" and s["traceId"] == item_trace_id(iid) and s["parentSpanId"] == run_span_id("777")
         assert s["a"]["gen_ai.request.model"] == "claude-code-action-default"
         assert tel.lookup("run", "777") == iid
-        assert len(rec.events("LlmChatCompletionSummary")) == 1
+        assert len(rec.events("CicdLlmRun")) == 1
         # a span older than New Relic keeps (~20 h, measured) is not sent; its event still is
         rec.posts.clear()
         tel.on_claude("review", {"duration_ms": 1000}, ok=True, error=None, source="gha", repo="notes", ctx={"ts": bot.clock.t - 30 * 3600})
         await tel.flush()
-        assert not rec.spans() and len(rec.events("LlmChatCompletionSummary")) == 1
+        assert not rec.spans() and len(rec.events("CicdLlmRun")) == 1
 
     asyncio.run(go())
 

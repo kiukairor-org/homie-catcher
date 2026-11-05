@@ -12,7 +12,7 @@ What is emitted (every record carries ``ai-pipeline = true``):
   ``claude <feature>`` spans (gen_ai.* attributes), GitHub Actions workflow runs with their jobs and steps
   (service ``github-actions``) and the Argo CD sync (service ``argocd``).
 - EVENTS (OTLP log records with ``newrelic.event.type``, which New Relic stores as custom events):
-  CicdPipelineRun, CicdStage, CicdWorkflowRun, CicdDeployment, LlmChatCompletionSummary.
+  CicdPipelineRun, CicdStage, CicdWorkflowRun, CicdDeployment, CicdLlmRun.
 - CHANGE TRACKING markers (NerdGraph, the read-only verify key file of D74 also has change-tracking rights) for each
   Argo CD sync of an app that has a New Relic entity.
 
@@ -371,7 +371,11 @@ class Telemetry:
     def on_claude(
         self, feature: str, result: dict | None, *, ok: bool, error: str | None, source: str, repo: str | None, ctx: dict | None = None
     ) -> None:
-        """One headless Claude run (catcher `claude -p` or claude-code-action): a gen_ai span + LlmChatCompletionSummary."""
+        """One headless Claude run (catcher `claude -p` or claude-code-action): a gen_ai span + a CicdLlmRun event.
+
+        The gen_ai.* span is the ONE source New Relic AI Monitoring reads (OTel gen_ai spans are ingested natively).
+        The event is deliberately NOT named LlmChatCompletionSummary (the APM agents' event): AI Monitoring would
+        count the same run twice. CicdLlmRun is the pipeline's own ledger (cost, turns, feature, item)."""
         if not self.enabled:
             return
         try:
@@ -427,7 +431,7 @@ class Telemetry:
             sid = self.span(service, f"claude {feature}", start, end, trace_id=trace, parent=parent, attrs=attrs, ok=ok, kind=3)
             self.event(
                 service,
-                "LlmChatCompletionSummary",
+                "CicdLlmRun",
                 {
                     "id": _h("llm", trace, sid)[:32],
                     "span_id": sid,
