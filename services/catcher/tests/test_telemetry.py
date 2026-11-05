@@ -386,3 +386,19 @@ def test_marker_retried_until_the_entity_exists(tmp_path):
         assert not [p for p in rec.posts[n:] if p[0].endswith("/graphql")]
 
     asyncio.run(go())
+
+
+def test_issue_body_carries_the_item_traceparent():
+    async def go():
+        bot, svc, _ = await make_bot([spec()])
+        triage_mode(bot)
+        p = post("work on notes: dark mode")
+        await bot.handle_post(p)
+        await bot.run_next()
+        await bot.handle_action(*click(next(b for b in last_buttons(svc) if b["name"] == "Approve")))
+        await bot.drain()
+        iid = bot.db.latest_item(p["id"])["id"]
+        (issue,) = svc.issues
+        assert f"<!-- homie-trace 00-{item_trace_id(iid)}-{item_root_span_id(iid)}-01 -->" in issue["body"]
+
+    asyncio.run(go())

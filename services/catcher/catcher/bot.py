@@ -38,7 +38,7 @@ from .routing import (
     valid_repo_name,
 )
 from .spec import Spec, SpecError, validate_spec
-from .telemetry import Telemetry, current_item
+from .telemetry import Telemetry, current_item, trace_marker
 from .text import NO_REPLY, YES_REPLY, clip, defang, issue_body, md_escape, spec_html, spec_markdown
 from .usage import Usage
 
@@ -594,6 +594,7 @@ class Catcher:
                 labels = [V1_LABEL, "agent"]
             title = f"Build v1: {spec.title}" if new_app else spec.title
             body = issue_body(spec, url, item["root_post_id"], item["plane_item_id"], new_app=new_app)
+            body += "\n" + trace_marker(item_id)  # D80: GitHub Actions Claude runs join the item's trace
             issue = await self.gh.create_issue(repo, title, body, labels)
             self.db.update_item(item_id, gh_issue_number=issue["number"], gh_issue_url=issue["html_url"])
             item = self.db.item(item_id)
