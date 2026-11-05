@@ -282,19 +282,36 @@ def test_argo_deploy_span_event_and_change_marker(tmp_path):
                 ],
             }
         }
-        tel = enable(bot, rec, tmp_path, k8s=FakeK8s({"app-notes": app}))
+        multi = {
+            "status": {
+                "history": [
+                    {
+                        "id": 7,
+                        "revisions": ["g1tops", "beefcafe"],
+                        "deployedAt": "2026-10-30T12:30:00Z",
+                        "sources": [
+                            {"repoURL": "git@github.com:o/homelab-gitops.git"},
+                            {"repoURL": "https://github.com/o/agentic-demo.git"},
+                        ],
+                    }
+                ]
+            }
+        }
+        tel = enable(bot, rec, tmp_path, k8s=FakeK8s({"app-notes": app, "app-agentic-demo": multi}))
         bot.clock.t = 1_793_361_600 + 3600
         bot.db.upsert_thread("root1", "chan")
         iid = bot.db.create_item("root1", "idea", "approved")
         tel.map("merge", "cafef00d", iid)
-        assert await tel.watch_deploys() == 1
+        assert await tel.watch_deploys() == 2
         assert await tel.watch_deploys() == 0
         await tel.flush()
         (d,) = [s for s in rec.spans() if s["name"] == "deploy app-notes"]
         assert d["service"] == "argocd" and d["traceId"] == item_trace_id(iid)
-        (ev,) = rec.events("CicdDeployment")
+        ev2 = next(e for e in rec.events("CicdDeployment") if e["deployment.name"] == "app-agentic-demo")
+        assert ev2["vcs.ref.head.revision"] == "beefcafe"  # the app repo's revision, not the gitops one
+        (ev,) = [e for e in rec.events("CicdDeployment") if e["deployment.name"] == "app-notes"]
         assert ev["nr.changeTracking.id"] == "dep-1" and ev["vcs.ref.head.revision"] == "cafef00d"
-        (mut,) = [b for u, b, h in rec.posts if u.endswith("/graphql") and "changeTracking" in b["query"]]
+        (mut,) = [b for u, b, h in rec.posts if u.endswith("/graphql") and "'notes'" in b["variables"]["e"]["entitySearch"]["query"]]
         e = mut["variables"]["e"]
         assert e["entitySearch"]["query"] == "name = 'notes' AND accountId = 8680047 AND type = 'SERVICE'"
         assert e["categoryAndTypeData"]["kind"] == {"category": "Deployment", "type": "Basic"}
@@ -339,3 +356,33 @@ def test_claude_child_env_carries_otel_and_traceparent(monkeypatch):
         assert child_env("t")["TRACEPARENT"] == f"00-{item_trace_id(42)}-{item_root_span_id(42)}-01"
     finally:
         current_item.reset(token)
+
+
+def test_marker_retried_until_the_entity_exists(tmp_path):
+    async def go():
+        bot, svc, _ = await make_bot([])
+
+        class NoEntityYet(Recorder):
+            ready = False
+
+            async def send(self, method, url, *, headers=None, json=None, params=None, timeout=30):
+                if url.endswith("/graphql") and not self.ready:
+                    self.posts.append((url, json, dict(headers or {})))
+                    return Response(200, {"data": {"changeTrackingCreateEvent": None}, "errors": [{"message": "No entities found"}]})
+                return await super().send(method, url, headers=headers, json=json, params=params, timeout=timeout)
+
+        rec = NoEntityYet()
+        app = {"status": {"history": [{"id": 1, "revision": "abc", "deployedAt": "2026-10-30T12:00:00Z"}]}}
+        tel = enable(bot, rec, tmp_path, k8s=FakeK8s({"catcher": app}))
+        bot.clock.t = 1_793_361_600 + 600
+        await tel.watch_deploys()
+        assert (await tel.retry_markers()) == 0
+        rec.ready = True
+        assert (await tel.retry_markers()) == 1 and (await tel.retry_markers()) == 0
+        bot.clock.t += 30 * 3600  # an old deploy never gets a marker attempt (NerdGraph refuses > 24 h)
+        app["status"]["history"].append({"id": 2, "revision": "def", "deployedAt": "2026-10-30T12:00:00Z"})
+        n = len(rec.posts)
+        await tel.watch_deploys()
+        assert not [p for p in rec.posts[n:] if p[0].endswith("/graphql")]
+
+    asyncio.run(go())

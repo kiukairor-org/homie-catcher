@@ -40,6 +40,7 @@ RUN_SETTLE_S = 480  # wait for the usage comment (polled every 5 min) so a Claud
 # Measured on account 8680047 (2026-11-05): back-dated OTLP spans are kept up to ~20 h, custom events (OTLP logs) up to ~47 h.
 BACKFILL_S = 46 * 3600  # first start: export runs/deploys/items of the last 46 h (events); older spans are not sent
 SPAN_MAX_AGE_S = 20 * 3600
+MARKER_MAX_AGE_S = 23 * 3600  # NerdGraph refuses change tracking timestamps > 24 h old (seen live)
 TERMINAL = frozenset({"done", "rejected", "error"})
 EXTRA_RUN_REPOS = ("app-template", "homie-catcher")
 PLATFORM_ARGO_APPS = {"catcher": "homie-catcher", "observability": None, "ai": None, "sre": None}
@@ -53,6 +54,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS otel_sent(key TEXT PRIMARY KEY, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS otel_map(kind TEXT NOT NULL, key TEXT NOT NULL, item_id INTEGER NOT NULL, PRIMARY KEY(kind, key));
 CREATE TABLE IF NOT EXISTS otel_trans(item_id INTEGER NOT NULL, status TEXT NOT NULL, ts REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS otel_marker(key TEXT PRIMARY KEY, args TEXT NOT NULL, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS otel_llm(item_id INTEGER NOT NULL, cost REAL, tin INTEGER, tout INTEGER, model TEXT, ts REAL NOT NULL);
 """
 
@@ -101,6 +103,18 @@ def run_span_id(run_id: Any, attempt: Any = 1) -> str:
 
 def _new_span_id() -> str:
     return os.urandom(8).hex()
+
+
+def history_revision(h: dict, repo: str | None) -> str:
+    """Revision of an Argo CD history entry. ApplicationSet apps are multi-source (gitops chart + the app repo's
+    deploy/): take the app repo's revision, which is the merge commit the pipeline produced."""
+    revs, srcs = h.get("revisions") or [], h.get("sources") or []
+    if repo and revs and srcs:
+        for rev, src in zip(revs, srcs):
+            url = str((src or {}).get("repoURL") or "").rstrip("/")
+            if url.endswith(f"/{repo}.git") or url.endswith(f"/{repo}"):
+                return str(rev)
+    return str(h.get("revision") or (revs[-1] if revs else ""))
 
 
 def iso_ts(value: Any) -> float | None:
@@ -594,7 +608,13 @@ class Telemetry:
     async def tick(self) -> None:
         if not self.enabled:
             return
-        for name, fn in (("backfill", self.backfill), ("workflow runs", self.export_runs), ("deploys", self.watch_deploys)):
+        steps = (
+            ("backfill", self.backfill),
+            ("workflow runs", self.export_runs),
+            ("deploys", self.watch_deploys),
+            ("markers", self.retry_markers),
+        )
+        for name, fn in steps:
             try:
                 await fn()
             except Exception:
@@ -752,10 +772,36 @@ class Telemetry:
                 n += 1
         return n
 
+    async def retry_markers(self) -> int:
+        """Change markers that failed (entity not created yet, NerdGraph down): retried until 23 h old."""
+        done = 0
+        for row in self._x("SELECT key, args, ts FROM otel_marker").fetchall():
+            if self.c.clock() - float(row["ts"]) > MARKER_MAX_AGE_S:
+                self._x("DELETE FROM otel_marker WHERE key=?", (row["key"],))
+                continue
+            a = json.loads(row["args"])
+            marker = await self.change_marker(a["entity"], a["rev"], a["app"], a["images"], float(a["ts"]), a["trace"])
+            if marker:
+                self._x("DELETE FROM otel_marker WHERE key=?", (row["key"],))
+                self.event(
+                    "argocd",
+                    "CicdChangeMarker",
+                    {
+                        "deployment.name": a["app"],
+                        "nr.entity.name": a["entity"],
+                        "nr.changeTracking.id": marker,
+                        "vcs.ref.head.revision": a["rev"],
+                        "trace.id": a["trace"],
+                        "retried": True,
+                    },
+                )
+                done += 1
+        return done
+
     async def emit_deploy(self, app: str, entity: str | None, h: dict, end: float, images: str | None, st: dict) -> None:
-        rev = str(h.get("revision") or next(iter(h.get("revisions") or []), ""))
-        start = iso_ts(h.get("deployStartedAt")) or end
         repo = app[4:] if app.startswith("app-") else None
+        rev = history_revision(h, repo)
+        start = iso_ts(h.get("deployStartedAt")) or end
         item_id = self.lookup("merge", rev) if rev else None
         trace = item_trace_id(item_id) if item_id is not None else _h("argo-deploy", app, h.get("id"))[:32]
         parent = item_root_span_id(item_id) if item_id is not None else None
@@ -772,7 +818,12 @@ class Telemetry:
             "argocd.sync": (st.get("sync") or {}).get("status"),
         }
         self.span("argocd", f"deploy {app}", start, end, trace_id=trace, parent=parent, attrs=attrs, kind=1)
-        marker = await self.change_marker(entity, rev, app, images, end, trace) if entity else None
+        marker = None
+        if entity and self.c.clock() - end <= MARKER_MAX_AGE_S:
+            marker = await self.change_marker(entity, rev, app, images, end, trace)
+            if marker is None:  # e.g. the entity does not exist yet (a brand-new service): retried by tick()
+                args = {"entity": entity, "rev": rev, "app": app, "images": images, "ts": end, "trace": trace}
+                self._x("INSERT OR IGNORE INTO otel_marker(key, args, ts) VALUES(?,?,?)", (f"{app}:{h.get('id')}", json.dumps(args), end))
         self.event(
             "argocd",
             "CicdDeployment",
