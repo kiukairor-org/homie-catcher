@@ -10,6 +10,7 @@ import os
 
 from aiohttp import ClientSession, web
 
+from . import otel_auto
 from .bot import NOT_ALLOWED, Catcher
 from .brainstorm import Brainstorm
 from .brainstorm_runner import BrainstormRunner
@@ -72,6 +73,7 @@ def make_app(catcher: Catcher) -> web.Application:
 async def main() -> None:
     cfg = Config.from_env()
     setup_logging(cfg.secret_values(), os.environ.get("LOG_LEVEL", "INFO"))
+    otel_auto.setup()  # D81: before any ClientSession / web.Application exists
     with open(cfg.github_app_private_key_path, encoding="utf-8") as fh:
         key = fh.read()
     async with ClientSession() as session:
