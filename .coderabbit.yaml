@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://www.coderabbit.ai/integrations/schema.v2.json
+reviews:
+  profile: assertive            # stricter, more nitpicky reviews
+  request_changes_workflow: true  # "request changes" until its comments are resolved
+  fail_commit_status: true      # if CodeRabbit errors, its check FAILS (blocks) instead of passing silently
+  review_status: true
+  high_level_summary: true      # the short summary you'll read instead of the diff
+  collapse_walkthrough: true
+  poem: false
+  abort_on_close: true
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches: ["main"]
+  path_instructions:
+    - path: "deploy/**"
+      instructions: "Flag any change to RBAC, secrets, privileged pods, resource limits or image tags. Treat as high risk."
+    - path: ".github/**"
+      instructions: "Flag any change to permissions, secrets usage, triggers (pull_request_target!) or third-party actions not pinned to a SHA."
+chat:
+  auto_reply: true
