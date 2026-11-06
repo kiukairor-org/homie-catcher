@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -153,6 +154,13 @@ def otlp_attrs(d: dict[str, Any]) -> list[dict]:
 
 def _ns(ts: float) -> str:
     return str(int(ts * 1e9))
+
+
+def step_label(name: Any) -> str:
+    """Span name of a workflow step without the pinned action SHA ("Run actions/checkout@3d3c42e…" -> "Run
+    actions/checkout"): one name per step, not one per action release (D81). The full name stays in
+    cicd.pipeline.step.name."""
+    return re.sub(r"@[0-9a-f]{40}\b", "", str(name or ""))[:120]
 
 
 def gha_result(conclusion: str | None) -> str:
@@ -731,7 +739,7 @@ class Telemetry:
                     sres = gha_result(step.get("conclusion"))
                     self.span(
                         "github-actions",
-                        f"step {step.get('name')}",
+                        f"step {step_label(step.get('name'))}",
                         ss,
                         se,
                         trace_id=trace,

@@ -429,3 +429,11 @@ def test_each_claude_run_gets_a_fresh_home(monkeypatch, tmp_path):
         asyncio.run(r.run("hi"))
     (h1, c1), (h2, c2) = seen
     assert h1 != h2 and not os.path.exists(h1) and not os.path.exists(h2)  # fresh and cleaned up
+
+
+def test_step_label_drops_pinned_action_sha():
+    from catcher.telemetry import step_label
+
+    assert step_label("Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") == "Run actions/checkout"
+    assert step_label("Post Run docker/login-action@dbcb813823bdd20940b903addbd779551569679f") == "Post Run docker/login-action"
+    assert step_label("gofmt") == "gofmt" and step_label(None) == ""
